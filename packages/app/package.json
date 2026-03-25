@@ -7,5 +7,8 @@
     "@hex/render": "workspace:*",
     "@hex/types": "workspace:*",
     "@hex/wfc": "workspace:*"
+  },
+  "devDependencies": {
+    "@hex/tsconfig": "workspace:*"
   }
 }

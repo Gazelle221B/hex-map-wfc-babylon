@@ -29,6 +29,10 @@ importers:
       '@hex/wfc':
         specifier: workspace:*
         version: link:../wfc
+    devDependencies:
+      '@hex/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
 
   packages/render:
     dependencies:
@@ -38,14 +42,28 @@ importers:
       '@hex/types':
         specifier: workspace:*
         version: link:../types
+    devDependencies:
+      '@hex/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
 
-  packages/types: {}
+  packages/tsconfig: {}
+
+  packages/types:
+    devDependencies:
+      '@hex/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
 
   packages/wfc:
     dependencies:
       '@hex/types':
         specifier: workspace:*
         version: link:../types
+    devDependencies:
+      '@hex/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
 
 packages:
 

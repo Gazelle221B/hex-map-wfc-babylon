@@ -9,5 +9,8 @@
   },
   "dependencies": {
     "@hex/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@hex/tsconfig": "workspace:*"
   }
 }
