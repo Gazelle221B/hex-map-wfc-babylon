@@ -11,5 +11,8 @@
   "dependencies": {
     "@babylonjs/core": "^8.45.2",
     "@hex/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@hex/tsconfig": "workspace:*"
   }
 }
