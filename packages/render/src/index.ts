@@ -10,7 +10,7 @@ import { createEngine } from "./engine.js";
 import { GridMeshLayer } from "./grid-mesh.js";
 import { PlacementMeshLayer } from "./placement-mesh.js";
 import { createScene } from "./scene.js";
-import { createTilePool } from "./tile-pool.js";
+import { createTilePool, type TilePool } from "./tile-pool.js";
 
 export interface HexRenderer {
   addGrid(result: GridResult): void;
@@ -39,12 +39,16 @@ export async function createRenderer(
   const cameraController = createCamera(canvas, scene, config, emitCameraChanged);
   scene.activeCamera = cameraController.camera;
 
-  let tilePool, gridLayer, placementLayer;
+  let tilePool: TilePool | undefined;
+  let gridLayer: GridMeshLayer | undefined;
+  let placementLayer: PlacementMeshLayer | undefined;
   try {
     tilePool = createTilePool(scene);
     gridLayer = new GridMeshLayer(tilePool);
     placementLayer = new PlacementMeshLayer(scene);
   } catch (err) {
+    gridLayer?.dispose();
+    tilePool?.dispose();
     cameraController.dispose();
     scene.dispose();
     engine.dispose();
