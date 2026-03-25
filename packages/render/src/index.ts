@@ -39,9 +39,17 @@ export async function createRenderer(
   const cameraController = createCamera(canvas, scene, config, emitCameraChanged);
   scene.activeCamera = cameraController.camera;
 
-  const tilePool = createTilePool(scene);
-  const gridLayer = new GridMeshLayer(tilePool);
-  const placementLayer = new PlacementMeshLayer(scene);
+  let tilePool, gridLayer, placementLayer;
+  try {
+    tilePool = createTilePool(scene);
+    gridLayer = new GridMeshLayer(tilePool);
+    placementLayer = new PlacementMeshLayer(scene);
+  } catch (err) {
+    cameraController.dispose();
+    scene.dispose();
+    engine.dispose();
+    throw err;
+  }
 
   const resize = () => engine.resize();
   window.addEventListener("resize", resize);

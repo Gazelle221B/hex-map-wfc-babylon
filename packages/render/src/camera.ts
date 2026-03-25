@@ -33,12 +33,13 @@ export function createCamera(
   camera.panningSensibility = 0;
 
   let lastRadius = camera.radius;
-  const observer = camera.onViewMatrixChangedObservable.add(() => {
-    if (Math.abs(camera.radius - lastRadius) > 0.001) {
-      lastRadius = camera.radius;
-      onZoomChanged(lastRadius);
-    }
-  });
+  let observer: ReturnType<typeof camera.onViewMatrixChangedObservable.add> | null =
+    camera.onViewMatrixChangedObservable.add(() => {
+      if (Math.abs(camera.radius - lastRadius) > 0.001) {
+        lastRadius = camera.radius;
+        onZoomChanged(lastRadius);
+      }
+    });
 
   return {
     camera,
@@ -61,6 +62,7 @@ export function createCamera(
     dispose() {
       if (observer) {
         camera.onViewMatrixChangedObservable.remove(observer);
+        observer = null;
       }
       camera.detachControl();
       camera.dispose();
