@@ -1,0 +1,11 @@
+{
+  "name": "@hex/app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@hex/render": "workspace:*",
+    "@hex/types": "workspace:*",
+    "@hex/wfc": "workspace:*"
+  }
+}

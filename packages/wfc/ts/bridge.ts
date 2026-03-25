@@ -1,9 +1,12 @@
+import type { CellResult, GridResult, PlacementItem, PlacementType } from "@hex/types";
+import { HEX_WIDTH, LEVEL_HEIGHT } from "@hex/types";
 import type {
   WorkerRequest,
   WorkerResponse,
   SolveResultData,
   PlacementData,
 } from "./types.js";
+import { gridIndexToPosition, gridPositionToIndex } from "./grid-positions.js";
 
 type PendingResolve<T> = {
   resolve: (value: T) => void;
@@ -50,6 +53,39 @@ export class WfcBridge {
     gridQ: number,
     gridR: number,
     tileTypes?: number[],
+  ): Promise<GridResult> {
+    const gridIndex = gridPositionToIndex(gridQ, gridR);
+    const raw = await this.solveGridRaw(gridQ, gridR, tileTypes);
+    return normalizeGridResult(assertSolveSucceeded(raw, gridIndex), gridIndex);
+  }
+
+  /** Solve all 19 grids. */
+  async solveAll(seed: number): Promise<GridResult[]> {
+    const rawResults = await this.solveAllRaw(seed);
+    return rawResults.map((result, gridIndex) =>
+      normalizeGridResult(assertSolveSucceeded(result, gridIndex), gridIndex),
+    );
+  }
+
+  /** Generate placements for a solved set of grids. */
+  async generatePlacements(
+    grids: readonly GridResult[],
+    seed: number,
+  ): Promise<PlacementItem[]> {
+    const placements = await Promise.all(
+      grids.map(async (grid) => {
+        const pos = gridIndexToPosition(grid.gridIndex);
+        const raw = await this.generatePlacementsRaw(pos.q, pos.r, seed + grid.gridIndex, 0, 0);
+        return raw.map(normalizePlacement);
+      }),
+    );
+    return placements.flat();
+  }
+
+  private async solveGridRaw(
+    gridQ: number,
+    gridR: number,
+    tileTypes?: number[],
   ): Promise<SolveResultData> {
     const id = this.genId();
     return this.request<SolveResultData>({
@@ -61,8 +97,7 @@ export class WfcBridge {
     }, id);
   }
 
-  /** Solve all 19 grids. */
-  async solveAll(seed: number): Promise<SolveResultData[]> {
+  private async solveAllRaw(seed: number): Promise<SolveResultData[]> {
     const id = this.genId();
     return this.request<SolveResultData[]>({
       type: "solveAll",
@@ -71,8 +106,7 @@ export class WfcBridge {
     }, id);
   }
 
-  /** Generate placements for a solved grid. */
-  async generatePlacements(
+  private async generatePlacementsRaw(
     gridQ: number,
     gridR: number,
     seed: number,
@@ -159,4 +193,97 @@ export class WfcBridge {
       }
     }
   };
+}
+
+function normalizeGridResult(result: SolveResultData, gridIndex: number): GridResult {
+  return {
+    gridIndex,
+    cells: result.tiles.map(normalizeCellResult),
+  };
+}
+
+function assertSolveSucceeded(result: SolveResultData, gridIndex: number): SolveResultData {
+  if (result.success) {
+    return result;
+  }
+
+  const pos = gridIndexToPosition(gridIndex);
+  throw new Error(
+    `WFC solve failed for grid ${gridIndex} at (${pos.q}, ${pos.r}, ${pos.s}) ` +
+    `[tries=${result.tries}, backtracks=${result.backtracks}, dropped_count=${result.dropped_count}, local_wfc_attempts=${result.local_wfc_attempts}]`,
+  );
+}
+
+function normalizeCellResult(tile: SolveResultData["tiles"][number]): CellResult {
+  const size = HEX_WIDTH / 2;
+  const worldX = size * (Math.sqrt(3) * tile.q + Math.sqrt(3) / 2 * tile.r);
+  const worldZ = size * (3 / 2 * tile.r);
+
+  return {
+    q: tile.q,
+    r: tile.r,
+    s: tile.s,
+    tileId: tile.tile_id,
+    rotation: tile.rotation,
+    elevation: tile.level,
+    worldX,
+    worldY: tile.level * LEVEL_HEIGHT,
+    worldZ,
+  };
+}
+
+function normalizePlacement(item: PlacementData): PlacementItem {
+  const { type, meshId, scale } = normalizePlacementKind(item.placement_type, item.tier);
+  return {
+    type,
+    meshId,
+    worldX: item.world_x,
+    worldY: item.world_y,
+    worldZ: item.world_z,
+    rotationY: item.rotation,
+    scale,
+  };
+}
+
+function normalizePlacementKind(
+  placementType: number,
+  tier: number,
+): { type: PlacementType; meshId: string; scale: number } {
+  switch (placementType) {
+    case 0:
+      return { type: "tree", meshId: "tree_a", scale: treeScaleForTier(tier) };
+    case 1:
+      return { type: "tree", meshId: "tree_b", scale: treeScaleForTier(tier) };
+    case 2:
+      return { type: "building", meshId: "building", scale: 1 };
+    case 3:
+      return { type: "windmill", meshId: "windmill", scale: 1.15 };
+    case 4:
+      return { type: "bridge", meshId: "bridge", scale: 1 };
+    case 5:
+      return { type: "waterlily", meshId: "waterlily", scale: 0.75 };
+    case 6:
+      return { type: "flower", meshId: "flower", scale: 0.55 };
+    case 7:
+      return { type: "rock", meshId: "rock", scale: 0.8 };
+    case 8:
+      return { type: "hill", meshId: "hill", scale: 1.2 };
+    case 9:
+      return { type: "mountain", meshId: "mountain", scale: 1.5 };
+    default:
+      throw new Error(`unknown placement type: ${placementType}`);
+  }
+}
+
+function treeScaleForTier(tier: number): number {
+  switch (tier) {
+    case 0:
+      return 0.85;
+    case 1:
+      return 1;
+    case 2:
+      return 1.2;
+    default:
+      return 1.35;
+  }
 }

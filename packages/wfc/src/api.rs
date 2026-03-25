@@ -1,14 +1,13 @@
-use wasm_bindgen::prelude::*;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
 
 use crate::hex::CubeCoord;
 use crate::multi_grid::{
-    GlobalCellMap, grid_center, local_to_global, solve_grid, all_grid_positions,
-    TILE_RADIUS,
+    GlobalCellMap, TILE_RADIUS, all_grid_positions, grid_center, local_to_global, solve_grid,
 };
 use crate::placement::{
-    PlacementConfig, PlacementItem, TileInfo, generate_placements,
-    generate_road_buildings, generate_windmills,
+    PlacementConfig, PlacementItem, TileInfo, generate_placements, generate_road_buildings,
+    generate_windmills,
 };
 use crate::solver::CollapsedTile;
 use crate::tile::{EdgeType, build_tile_list};
@@ -122,9 +121,8 @@ impl WfcEngine {
         self.reset();
         let mut results = Vec::new();
 
-        // Sort grid positions by distance from center (center first)
-        let mut positions = all_grid_positions();
-        positions.sort_by_key(|p| p.distance(&CubeCoord::new(0, 0)));
+        // all_grid_positions() defines the canonical cross-language grid order.
+        let positions = all_grid_positions();
 
         for (i, pos) in positions.iter().enumerate() {
             let result = solve_grid(*pos, &self.global_map, seed + i as u64, None);
