@@ -66,7 +66,11 @@ export async function createRenderer(
     subscribe(events) {
       subscriptions.add(events);
       if (events.onReady) {
-        queueMicrotask(() => events.onReady?.());
+        queueMicrotask(() => {
+          if (subscriptions.has(events)) {
+            events.onReady?.();
+          }
+        });
       }
       return () => {
         subscriptions.delete(events);
