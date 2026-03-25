@@ -18,6 +18,27 @@ importers:
         specifier: ^3.0.0
         version: 3.6.0(vite@6.4.1)
 
+  packages/app:
+    dependencies:
+      '@hex/render':
+        specifier: workspace:*
+        version: link:../render
+      '@hex/types':
+        specifier: workspace:*
+        version: link:../types
+      '@hex/wfc':
+        specifier: workspace:*
+        version: link:../wfc
+
+  packages/render:
+    dependencies:
+      '@babylonjs/core':
+        specifier: ^8.45.2
+        version: 8.56.2
+      '@hex/types':
+        specifier: workspace:*
+        version: link:../types
+
   packages/types: {}
 
   packages/wfc:
@@ -27,6 +48,9 @@ importers:
         version: link:../types
 
 packages:
+
+  '@babylonjs/core@8.56.2':
+    resolution: {integrity: sha512-UShs1pt8tSTLYOoITWclXPNrUZUpuHvB2Ur2L1D+uM8c9qaAYOi9gjkurOkQwIlbPGqwQHWImGEyiyix0mQ1dg==}
 
   '@esbuild/aix-ppc64@0.25.12':
     resolution: {integrity: sha512-Hhmwd6CInZ3dwpuGTF8fJG6yoWmsToE+vYgD4nytZVxcu1ulHpUQRAB1UJ8+N1Am3Mz4+xOByoQoSZf4D+CpkA==}
@@ -424,6 +448,8 @@ packages:
         optional: true
 
 snapshots:
+
+  '@babylonjs/core@8.56.2': {}
 
   '@esbuild/aix-ppc64@0.25.12':
     optional: true
