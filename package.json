@@ -1,0 +1,18 @@
+{
+  "name": "hex-map-wfc-babylon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "cargo build --release --target wasm32-unknown-unknown -p wfc-core && wasm-bindgen --target web ./target/wasm32-unknown-unknown/release/wfc_core.wasm --out-dir ./packages/wfc/wasm && wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int ./packages/wfc/wasm/wfc_core_bg.wasm -o ./packages/wfc/wasm/wfc_core_bg.wasm",
+    "dev": "pnpm run build:wasm && vite",
+    "build": "pnpm run build:wasm && vite build",
+    "test:rust": "cargo test -p wfc-core",
+    "test": "pnpm run test:rust"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0",
+    "vite-plugin-wasm": "^3.0.0"
+  }
+}

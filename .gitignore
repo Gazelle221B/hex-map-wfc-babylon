@@ -1,0 +1,11 @@
+node_modules/
+target/
+dist/
+coverage/
+.DS_Store
+
+packages/*/dist/
+packages/*/node_modules/
+packages/app/.vite/
+
+*.tsbuildinfo

@@ -1,0 +1,13 @@
+{
+  "name": "@hex/wfc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./ts/index.ts",
+    "./worker": "./ts/worker.ts"
+  },
+  "dependencies": {
+    "@hex/types": "workspace:*"
+  }
+}

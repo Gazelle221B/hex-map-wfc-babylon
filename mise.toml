@@ -1,0 +1,19 @@
+[tools]
+node = "22"
+
+[tools.rust]
+version = "stable"
+
+[settings]
+experimental = true
+
+[tasks.wasm-target]
+description = "Add wasm32 target"
+run = "rustup target add wasm32-unknown-unknown"
+
+[tasks.wasm-tools]
+description = "Install wasm-bindgen-cli and wasm-opt"
+run = """
+cargo install wasm-bindgen-cli@0.2.100
+cargo install wasm-opt --version 0.116.1
+"""
