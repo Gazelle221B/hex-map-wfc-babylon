@@ -34,11 +34,26 @@ export class GridMeshLayer {
       return;
     }
 
-    const merged = clones.length === 1
-      ? clones[0]
-      : Mesh.MergeMeshes(clones, true, true, undefined, false, true);
+    let merged: Mesh | null;
+    try {
+      merged = clones.length === 1
+        ? clones[0]
+        : Mesh.MergeMeshes(clones, true, true, undefined, false, true);
+    } catch (error) {
+      for (const clone of clones) {
+        if (!clone.isDisposed()) {
+          clone.dispose();
+        }
+      }
+      throw error;
+    }
 
     if (!merged) {
+      for (const clone of clones) {
+        if (!clone.isDisposed()) {
+          clone.dispose();
+        }
+      }
       return;
     }
 
