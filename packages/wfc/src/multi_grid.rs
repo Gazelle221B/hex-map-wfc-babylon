@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::grid::WfcGrid;
@@ -136,7 +137,19 @@ pub fn global_to_local(global: CubeCoord, center: CubeCoord) -> CubeCoord {
 
 /// Enumerate all 19 grid positions in the hex-of-hex (radius 2).
 pub fn all_grid_positions() -> Vec<CubeCoord> {
-    CubeCoord::new(0, 0).cells_in_radius(GRID_RADIUS)
+    // This explicit order is the cross-language gridIndex <-> (q, r, s) contract
+    // shared with packages/wfc/ts/grid-positions.ts and used by placements.
+    let mut positions = CubeCoord::new(0, 0).cells_in_radius(GRID_RADIUS);
+    positions.sort_by(compare_grid_positions);
+    positions
+}
+
+fn compare_grid_positions(a: &CubeCoord, b: &CubeCoord) -> Ordering {
+    a.distance(&CubeCoord::new(0, 0))
+        .cmp(&b.distance(&CubeCoord::new(0, 0)))
+        .then_with(|| a.q.cmp(&b.q))
+        .then_with(|| a.r.cmp(&b.r))
+        .then_with(|| a.s.cmp(&b.s))
 }
 
 /// Get fixed cells (boundary constraints) for a grid solve.
@@ -364,11 +377,7 @@ fn attempt_solve(
     seed: u64,
     allowed_types: Option<&[u16]>,
 ) -> SolveResult {
-    let mut grid = WfcGrid::new(
-        coords,
-        crate::tile::build_tile_list(),
-        allowed_types,
-    );
+    let mut grid = WfcGrid::new(coords, crate::tile::build_tile_list(), allowed_types);
 
     // Apply fixed cells (skip dropped ones)
     let dropped_set: HashSet<String> = dropped.iter().map(|c| c.key()).collect();
@@ -455,6 +464,34 @@ mod tests {
     }
 
     #[test]
+    fn all_grid_positions_use_canonical_order() {
+        let positions = all_grid_positions();
+        let expected = vec![
+            CubeCoord::new(0, 0),
+            CubeCoord::new(-1, 0),
+            CubeCoord::new(-1, 1),
+            CubeCoord::new(0, -1),
+            CubeCoord::new(0, 1),
+            CubeCoord::new(1, -1),
+            CubeCoord::new(1, 0),
+            CubeCoord::new(-2, 0),
+            CubeCoord::new(-2, 1),
+            CubeCoord::new(-2, 2),
+            CubeCoord::new(-1, -1),
+            CubeCoord::new(-1, 2),
+            CubeCoord::new(0, -2),
+            CubeCoord::new(0, 2),
+            CubeCoord::new(1, -2),
+            CubeCoord::new(1, 1),
+            CubeCoord::new(2, -2),
+            CubeCoord::new(2, -1),
+            CubeCoord::new(2, 0),
+        ];
+
+        assert_eq!(positions, expected);
+    }
+
+    #[test]
     fn local_global_roundtrip() {
         let center = grid_center(CubeCoord::new(1, -1), 8);
         let local = CubeCoord::new(3, -2);
@@ -502,12 +539,7 @@ mod tests {
 
     #[test]
     fn solve_single_grid_no_constraints() {
-        let result = solve_grid(
-            CubeCoord::new(0, 0),
-            &GlobalCellMap::new(),
-            42,
-            None,
-        );
+        let result = solve_grid(CubeCoord::new(0, 0), &GlobalCellMap::new(), 42, None);
         assert!(
             result.success,
             "single grid should solve without constraints (stats: {:?})",
@@ -521,12 +553,7 @@ mod tests {
         let mut global_map = GlobalCellMap::new();
 
         // Solve center grid first
-        let result_a = solve_grid(
-            CubeCoord::new(0, 0),
-            &global_map,
-            42,
-            None,
-        );
+        let result_a = solve_grid(CubeCoord::new(0, 0), &global_map, 42, None);
         assert!(result_a.success, "center grid should solve");
 
         // Insert center grid results
@@ -534,12 +561,7 @@ mod tests {
         global_map.insert_result(&result_a.tiles, &grid_key_a);
 
         // Solve NE grid with boundary constraints
-        let result_b = solve_grid(
-            CubeCoord::new(1, -1),
-            &global_map,
-            43,
-            None,
-        );
+        let result_b = solve_grid(CubeCoord::new(1, -1), &global_map, 43, None);
         assert!(
             result_b.success,
             "NE grid should solve with boundary constraints (stats: {:?})",

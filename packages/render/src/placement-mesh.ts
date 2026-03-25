@@ -132,13 +132,22 @@ function createPlacementSource(scene: Scene, material: StandardMaterial, meshId:
 }
 
 function mergeParts(name: string, parts: Mesh[]): Mesh {
-  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
-  if (!merged) {
-    throw new Error(`failed to merge placeholder placement mesh: ${name}`);
+  try {
+    const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+    if (!merged) {
+      throw new Error(`failed to merge placeholder placement mesh: ${name}`);
+    }
+    merged.name = name;
+    merged.useVertexColors = true;
+    return merged;
+  } catch (error) {
+    for (const part of parts) {
+      if (!part.isDisposed()) {
+        part.dispose();
+      }
+    }
+    throw error;
   }
-  merged.name = name;
-  merged.useVertexColors = true;
-  return merged;
 }
 
 function createColoredBox(

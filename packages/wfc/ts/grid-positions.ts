@@ -20,10 +20,17 @@ function distanceFromOrigin(pos: GridPosition): number {
   return (Math.abs(pos.q) + Math.abs(pos.r) + Math.abs(pos.s)) / 2;
 }
 
+function compareGridPositions(a: GridPosition, b: GridPosition): number {
+  return distanceFromOrigin(a) - distanceFromOrigin(b)
+    || a.q - b.q
+    || a.r - b.r
+    || a.s - b.s;
+}
+
+// This explicit order is the cross-language gridIndex <-> (q, r, s) contract
+// shared with packages/wfc/src/multi_grid.rs and used by placements.
 export const ALL_GRID_POSITIONS: readonly GridPosition[] = cellsInRadius(2)
-  .map((pos, index) => ({ pos, index }))
-  .sort((a, b) => distanceFromOrigin(a.pos) - distanceFromOrigin(b.pos) || a.index - b.index)
-  .map(({ pos }) => pos);
+  .sort(compareGridPositions);
 
 const GRID_INDEX_BY_KEY = new Map<string, number>(
   ALL_GRID_POSITIONS.map((pos, index) => [`${pos.q},${pos.r},${pos.s}`, index]),
