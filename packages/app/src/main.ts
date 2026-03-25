@@ -12,7 +12,7 @@ if (!canvas || !statusElement || !zoomElement || !errorElement || !errorMessageE
 
 void boot(canvas, statusElement, zoomElement).catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
-  statusElement.textContent = "Renderer initialization failed.";
+  statusElement.textContent = "Application initialization failed.";
   errorMessageElement.textContent = message;
   errorElement.classList.add("visible");
 });

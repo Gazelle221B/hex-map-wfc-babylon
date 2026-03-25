@@ -14,8 +14,11 @@ import type { PlacementItem } from "@hex/types";
 export class PlacementMeshLayer {
   private readonly items: PlacementItem[] = [];
   private readonly sources = new Map<string, Mesh>();
+  private readonly material: StandardMaterial;
 
-  constructor(private readonly scene: Scene) {}
+  constructor(private readonly scene: Scene) {
+    this.material = createVertexColorMaterial(scene, "placement-placeholder-material");
+  }
 
   addPlacements(items: readonly PlacementItem[]): void {
     this.items.push(...items);
@@ -35,6 +38,7 @@ export class PlacementMeshLayer {
     }
     this.sources.clear();
     this.items.length = 0;
+    this.material.dispose();
   }
 
   private sync(): void {
@@ -78,7 +82,7 @@ export class PlacementMeshLayer {
       return existing;
     }
 
-    const source = createPlacementSource(this.scene, meshId);
+    const source = createPlacementSource(this.scene, this.material, meshId);
     source.isVisible = false;
     source.isPickable = false;
     source.alwaysSelectAsActiveMesh = true;
@@ -87,43 +91,43 @@ export class PlacementMeshLayer {
   }
 }
 
-function createPlacementSource(scene: Scene, meshId: string): Mesh {
+function createPlacementSource(scene: Scene, material: StandardMaterial, meshId: string): Mesh {
   switch (meshId) {
     case "tree_a":
       return mergeParts(
         "tree-a",
         [
-          createColoredCylinder(scene, "tree-a-trunk", { height: 0.45, diameterTop: 0.12, diameterBottom: 0.16 }, new Color3(0.35, 0.24, 0.15), 0.225),
-          createColoredSphere(scene, "tree-a-canopy", 0.54, new Color3(0.28, 0.6, 0.26), 0.72),
+          createColoredCylinder(scene, material, "tree-a-trunk", { height: 0.45, diameterTop: 0.12, diameterBottom: 0.16 }, new Color3(0.35, 0.24, 0.15), 0.225),
+          createColoredSphere(scene, material, "tree-a-canopy", 0.54, new Color3(0.28, 0.6, 0.26), 0.72),
         ],
       );
     case "tree_b":
       return mergeParts(
         "tree-b",
         [
-          createColoredCylinder(scene, "tree-b-trunk", { height: 0.38, diameterTop: 0.1, diameterBottom: 0.14 }, new Color3(0.39, 0.25, 0.12), 0.19),
-          createColoredCylinder(scene, "tree-b-canopy", { height: 0.82, diameterTop: 0, diameterBottom: 0.68, tessellation: 8 }, new Color3(0.18, 0.48, 0.2), 0.76),
+          createColoredCylinder(scene, material, "tree-b-trunk", { height: 0.38, diameterTop: 0.1, diameterBottom: 0.14 }, new Color3(0.39, 0.25, 0.12), 0.19),
+          createColoredCylinder(scene, material, "tree-b-canopy", { height: 0.82, diameterTop: 0, diameterBottom: 0.68, tessellation: 8 }, new Color3(0.18, 0.48, 0.2), 0.76),
         ],
       );
     case "building":
       return mergeParts(
         "building",
         [
-          createColoredBox(scene, "building-body", { width: 0.6, height: 0.52, depth: 0.6 }, new Color3(0.82, 0.78, 0.69), 0.26),
-          createColoredCylinder(scene, "building-roof", { height: 0.28, diameterTop: 0, diameterBottom: 0.82, tessellation: 4 }, new Color3(0.68, 0.28, 0.21), 0.66),
+          createColoredBox(scene, material, "building-body", { width: 0.6, height: 0.52, depth: 0.6 }, new Color3(0.82, 0.78, 0.69), 0.26),
+          createColoredCylinder(scene, material, "building-roof", { height: 0.28, diameterTop: 0, diameterBottom: 0.82, tessellation: 4 }, new Color3(0.68, 0.28, 0.21), 0.66),
         ],
       );
     case "windmill":
       return mergeParts(
         "windmill",
         [
-          createColoredCylinder(scene, "windmill-body", { height: 0.78, diameterTop: 0.16, diameterBottom: 0.26 }, new Color3(0.86, 0.83, 0.74), 0.39),
-          createColoredBox(scene, "windmill-blade-a", { width: 0.7, height: 0.06, depth: 0.08 }, new Color3(0.92, 0.9, 0.86), 0.88, 0.12),
-          createColoredBox(scene, "windmill-blade-b", { width: 0.06, height: 0.7, depth: 0.08 }, new Color3(0.92, 0.9, 0.86), 0.88, 0.12),
+          createColoredCylinder(scene, material, "windmill-body", { height: 0.78, diameterTop: 0.16, diameterBottom: 0.26 }, new Color3(0.86, 0.83, 0.74), 0.39),
+          createColoredBox(scene, material, "windmill-blade-a", { width: 0.7, height: 0.06, depth: 0.08 }, new Color3(0.92, 0.9, 0.86), 0.88, 0.12),
+          createColoredBox(scene, material, "windmill-blade-b", { width: 0.06, height: 0.7, depth: 0.08 }, new Color3(0.92, 0.9, 0.86), 0.88, 0.12),
         ],
       );
     default:
-      return createColoredBox(scene, `placement-${meshId}`, { width: 0.32, height: 0.32, depth: 0.32 }, new Color3(0.8, 0.2, 0.7), 0.16);
+      return createColoredBox(scene, material, `placement-${meshId}`, { width: 0.32, height: 0.32, depth: 0.32 }, new Color3(0.8, 0.2, 0.7), 0.16);
   }
 }
 
@@ -139,6 +143,7 @@ function mergeParts(name: string, parts: Mesh[]): Mesh {
 
 function createColoredBox(
   scene: Scene,
+  material: StandardMaterial,
   name: string,
   options: { width: number; height: number; depth: number },
   color: Color3,
@@ -149,13 +154,14 @@ function createColoredBox(
   mesh.position.set(0, y, z);
   mesh.bakeCurrentTransformIntoVertices();
   applySolidVertexColor(mesh, color);
-  mesh.material = createVertexColorMaterial(scene, `${name}-mat`);
+  mesh.material = material;
   mesh.useVertexColors = true;
   return mesh;
 }
 
 function createColoredSphere(
   scene: Scene,
+  material: StandardMaterial,
   name: string,
   diameter: number,
   color: Color3,
@@ -165,13 +171,14 @@ function createColoredSphere(
   mesh.position.y = y;
   mesh.bakeCurrentTransformIntoVertices();
   applySolidVertexColor(mesh, color);
-  mesh.material = createVertexColorMaterial(scene, `${name}-mat`);
+  mesh.material = material;
   mesh.useVertexColors = true;
   return mesh;
 }
 
 function createColoredCylinder(
   scene: Scene,
+  material: StandardMaterial,
   name: string,
   options: { height: number; diameterTop?: number; diameterBottom?: number; tessellation?: number },
   color: Color3,
@@ -181,7 +188,7 @@ function createColoredCylinder(
   mesh.position.y = y;
   mesh.bakeCurrentTransformIntoVertices();
   applySolidVertexColor(mesh, color);
-  mesh.material = createVertexColorMaterial(scene, `${name}-mat`);
+  mesh.material = material;
   mesh.useVertexColors = true;
   return mesh;
 }

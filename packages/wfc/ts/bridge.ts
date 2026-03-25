@@ -56,13 +56,15 @@ export class WfcBridge {
   ): Promise<GridResult> {
     const gridIndex = gridPositionToIndex(gridQ, gridR);
     const raw = await this.solveGridRaw(gridQ, gridR, tileTypes);
-    return normalizeGridResult(raw, gridIndex);
+    return normalizeGridResult(assertSolveSucceeded(raw, gridIndex), gridIndex);
   }
 
   /** Solve all 19 grids. */
   async solveAll(seed: number): Promise<GridResult[]> {
     const rawResults = await this.solveAllRaw(seed);
-    return rawResults.map((result, gridIndex) => normalizeGridResult(result, gridIndex));
+    return rawResults.map((result, gridIndex) =>
+      normalizeGridResult(assertSolveSucceeded(result, gridIndex), gridIndex),
+    );
   }
 
   /** Generate placements for a solved set of grids. */
@@ -198,6 +200,18 @@ function normalizeGridResult(result: SolveResultData, gridIndex: number): GridRe
     gridIndex,
     cells: result.tiles.map(normalizeCellResult),
   };
+}
+
+function assertSolveSucceeded(result: SolveResultData, gridIndex: number): SolveResultData {
+  if (result.success) {
+    return result;
+  }
+
+  const pos = gridIndexToPosition(gridIndex);
+  throw new Error(
+    `WFC solve failed for grid ${gridIndex} at (${pos.q}, ${pos.r}, ${pos.s}) ` +
+    `[tries=${result.tries}, backtracks=${result.backtracks}, dropped_count=${result.dropped_count}, local_wfc_attempts=${result.local_wfc_attempts}]`,
+  );
 }
 
 function normalizeCellResult(tile: SolveResultData["tiles"][number]): CellResult {
