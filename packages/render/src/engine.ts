@@ -36,7 +36,19 @@ function errorDetails(error: unknown): string {
 
 function isAdapterUnavailableError(error: unknown): boolean {
   const message = errorDetails(error).toLowerCase();
-  return message.includes("requestadapter") || message.includes("adapter");
+  const adapterRequestPhrases = [
+    "requestadapter",
+    "request adapter",
+    "failed to request adapter",
+    "unable to request adapter",
+    "could not request adapter",
+    "could not retrieve a webgpu adapter",
+    "no adapter",
+    "no compatible adapter",
+    "no compatible gpu adapter",
+    "adapter is null",
+  ];
+  return adapterRequestPhrases.some((phrase) => message.includes(phrase));
 }
 
 export async function createEngine(canvas: HTMLCanvasElement): Promise<WebGPUEngine> {
