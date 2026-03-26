@@ -1,0 +1,40 @@
+import type { WorkerFatalPhase } from "./types.js";
+
+export type WfcBridgeErrorKind = "disposed" | "fatal";
+
+function defaultUserMessage(
+  kind: WfcBridgeErrorKind,
+  phase?: WorkerFatalPhase,
+): string {
+  if (kind === "disposed") {
+    return "The map generator stopped before finishing. Reload the page and try again.";
+  }
+
+  if (phase === "init") {
+    return "Failed to initialize the WFC worker. Reload the page and try again.";
+  }
+
+  return "The WFC worker stopped unexpectedly while generating the map. Reload the page and try again.";
+}
+
+export class WfcBridgeError extends Error {
+  readonly kind: WfcBridgeErrorKind;
+  readonly phase?: WorkerFatalPhase;
+  readonly userMessage: string;
+
+  constructor(
+    kind: WfcBridgeErrorKind,
+    message: string,
+    options: {
+      phase?: WorkerFatalPhase;
+      userMessage?: string;
+    } = {},
+  ) {
+    super(message);
+    this.name = "WfcBridgeError";
+    this.kind = kind;
+    this.phase = options.phase;
+    this.userMessage = options.userMessage ?? defaultUserMessage(kind, options.phase);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}

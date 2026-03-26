@@ -1,6 +1,8 @@
 import type { CellResult, GridResult, PlacementItem, PlacementType } from "@hex/types";
 import { HEX_WIDTH, LEVEL_HEIGHT } from "@hex/types";
+import { WfcBridgeError } from "./errors.js";
 import type {
+  WorkerFatalPhase,
   WorkerRequest,
   WorkerResponse,
   SolveResultData,
@@ -18,9 +20,14 @@ type PendingResolve<T> = {
  * Provides a Promise-based API for grid solving and placement generation.
  */
 export class WfcBridge {
-  private worker: Worker;
+  private worker: Worker | null;
   private pending = new Map<string, PendingResolve<unknown>>();
   private readyPromise: Promise<void>;
+  private resolveReady!: () => void;
+  private rejectReady!: (reason: Error) => void;
+  private readySettled = false;
+  private disposed = false;
+  private terminalError: Error | null = null;
   private nextId = 0;
 
   constructor(seed: number) {
@@ -29,18 +36,15 @@ export class WfcBridge {
       { type: "module" },
     );
 
-    this.readyPromise = new Promise<void>((resolve) => {
-      const onReady = (event: MessageEvent<WorkerResponse>) => {
-        if (event.data.type === "ready") {
-          this.worker.removeEventListener("message", onReady);
-          resolve();
-        }
-      };
-      this.worker.addEventListener("message", onReady);
+    this.readyPromise = new Promise<void>((resolve, reject) => {
+      this.resolveReady = resolve;
+      this.rejectReady = reject;
     });
 
     this.worker.addEventListener("message", this.onMessage);
-    this.send({ type: "init", seed });
+    this.worker.addEventListener("error", this.onWorkerError);
+    this.worker.addEventListener("messageerror", this.onWorkerMessageError);
+    this.post({ type: "init", seed }, "init");
   }
 
   /** Wait for the WASM module to initialize. */
@@ -127,27 +131,66 @@ export class WfcBridge {
 
   /** Reset the engine state. */
   reset(): void {
-    this.send({ type: "reset" });
+    if (this.disposed || this.terminalError) {
+      return;
+    }
+    this.post({ type: "reset" }, "runtime");
   }
 
   /** Terminate the worker. */
   dispose(): void {
-    this.worker.removeEventListener("message", this.onMessage);
-    this.worker.terminate();
-    for (const { reject } of this.pending.values()) {
-      reject(new Error("worker terminated"));
+    if (this.disposed) {
+      return;
     }
-    this.pending.clear();
+
+    this.disposed = true;
+    if (!this.terminalError) {
+      this.terminalError = new WfcBridgeError("disposed", "The WFC worker was disposed.");
+    }
+
+    this.rejectReadyOnce(this.terminalError);
+    this.rejectPending(this.terminalError);
+    this.detachWorker(true);
   }
 
-  private send(msg: WorkerRequest): void {
-    this.worker.postMessage(msg);
+  private post(msg: WorkerRequest, phase: WorkerFatalPhase): void {
+    if (!this.worker) {
+      if (!this.terminalError) {
+        this.handleFatal(phase, "The WFC worker is no longer available.");
+      }
+      return;
+    }
+
+    try {
+      this.worker.postMessage(msg);
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      this.handleFatal(phase, `Failed to post a message to the WFC worker: ${details}`);
+    }
   }
 
-  private request<T>(msg: WorkerRequest, id: string): Promise<T> {
+  private async request<T>(msg: WorkerRequest, id: string): Promise<T> {
+    await this.ready();
+    const worker = this.assertActiveWorker();
+
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      this.send(msg);
+      try {
+        worker.postMessage(msg);
+      } catch (error) {
+        this.pending.delete(id);
+        const details = error instanceof Error ? error.message : String(error);
+        const terminalError = new WfcBridgeError(
+          "fatal",
+          `Failed to post a message to the WFC worker: ${details}`,
+          { phase: "runtime" },
+        );
+        this.terminalError = terminalError;
+        this.rejectReadyOnce(terminalError);
+        this.rejectPending(terminalError);
+        this.detachWorker(true);
+        reject(terminalError);
+      }
     });
   }
 
@@ -159,6 +202,9 @@ export class WfcBridge {
     const msg = event.data;
 
     switch (msg.type) {
+      case "ready":
+        this.resolveReadyOnce();
+        break;
       case "result": {
         const p = this.pending.get(msg.id);
         if (p) {
@@ -183,6 +229,9 @@ export class WfcBridge {
         }
         break;
       }
+      case "fatal":
+        this.handleFatal(msg.phase, msg.message);
+        break;
       case "error": {
         const p = this.pending.get(msg.id);
         if (p) {
@@ -193,6 +242,90 @@ export class WfcBridge {
       }
     }
   };
+
+  private onWorkerError = (event: ErrorEvent): void => {
+    this.handleFatal(
+      "runtime",
+      event.message || "The WFC worker encountered an unhandled error.",
+    );
+  };
+
+  private onWorkerMessageError = (): void => {
+    this.handleFatal(
+      "runtime",
+      "The WFC worker sent a message that could not be deserialized.",
+    );
+  };
+
+  private assertActiveWorker(): Worker {
+    if (this.terminalError) {
+      throw this.terminalError;
+    }
+    if (this.disposed) {
+      const error = new WfcBridgeError("disposed", "The WFC worker has already been disposed.");
+      this.terminalError = error;
+      throw error;
+    }
+    if (!this.worker) {
+      const error = new WfcBridgeError(
+        "fatal",
+        "The WFC worker is no longer available.",
+        { phase: "runtime" },
+      );
+      this.terminalError = error;
+      throw error;
+    }
+    return this.worker;
+  }
+
+  private handleFatal(phase: WorkerFatalPhase, message: string): void {
+    if (this.terminalError) {
+      return;
+    }
+
+    const error = new WfcBridgeError("fatal", message, { phase });
+    this.terminalError = error;
+    this.rejectReadyOnce(error);
+    this.rejectPending(error);
+    this.detachWorker(true);
+  }
+
+  private resolveReadyOnce(): void {
+    if (this.readySettled) {
+      return;
+    }
+    this.readySettled = true;
+    this.resolveReady();
+  }
+
+  private rejectReadyOnce(error: Error): void {
+    if (this.readySettled) {
+      return;
+    }
+    this.readySettled = true;
+    this.rejectReady(error);
+  }
+
+  private rejectPending(error: Error): void {
+    for (const { reject } of this.pending.values()) {
+      reject(error);
+    }
+    this.pending.clear();
+  }
+
+  private detachWorker(terminate: boolean): void {
+    if (!this.worker) {
+      return;
+    }
+
+    this.worker.removeEventListener("message", this.onMessage);
+    this.worker.removeEventListener("error", this.onWorkerError);
+    this.worker.removeEventListener("messageerror", this.onWorkerMessageError);
+    if (terminate) {
+      this.worker.terminate();
+    }
+    this.worker = null;
+  }
 }
 
 function normalizeGridResult(result: SolveResultData, gridIndex: number): GridResult {

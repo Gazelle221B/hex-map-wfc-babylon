@@ -31,13 +31,13 @@ export async function boot(
   };
 
   try {
+    statusElement.textContent = "WebGPU check…";
     renderer = await createRenderer(canvas, config);
+
+    statusElement.textContent = "WFC worker init…";
     wfc = new WfcBridge(config.seed);
 
     unsubscribe = renderer.subscribe({
-      onReady: () => {
-        statusElement.textContent = "Renderer ready. Preparing WFC worker…";
-      },
       onCameraChanged: (zoom) => {
         zoomElement.textContent = `Camera radius: ${zoom.toFixed(1)}`;
       },
@@ -46,10 +46,10 @@ export async function boot(
     await wfc.ready();
     zoomElement.textContent = `Camera radius: ${((config.cameraMinDistance + config.cameraMaxDistance) / 2).toFixed(1)}`;
 
-    statusElement.textContent = "Solving 19 grids in WebAssembly… this can take a while.";
+    statusElement.textContent = "Solve…";
     const grids = await wfc.solveAll(config.seed);
 
-    statusElement.textContent = "Generating placements…";
+    statusElement.textContent = "Placements…";
     const placements = await wfc.generatePlacements(grids, config.seed);
 
     renderer.clear();
@@ -57,7 +57,7 @@ export async function boot(
       renderer.addGrid(grid);
     }
     renderer.addPlacements(placements);
-    statusElement.textContent = `Rendered ${grids.length} grids and ${placements.length} placements.`;
+    statusElement.textContent = `Render complete: ${grids.length} grids and ${placements.length} placements.`;
 
     return {
       dispose() {
