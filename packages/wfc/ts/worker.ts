@@ -17,15 +17,19 @@ function errorMessage(error: unknown): string {
 }
 
 async function initialize(seed: number): Promise<void> {
+  const previousEngine = engine;
+
   try {
     // In a worker, import.meta.url resolves to the worker script URL.
     // The WASM binary is co-located with the JS glue.
     await init();
-    engine?.free();
-    engine = new WfcEngine();
+    const nextEngine = new WfcEngine();
+    previousEngine?.free();
+    engine = nextEngine;
     currentSeed = seed;
     post({ type: "ready" });
   } catch (error) {
+    previousEngine?.free();
     engine = null;
     postFatal("init", `Failed to initialize the WASM worker: ${errorMessage(error)}`);
   }
