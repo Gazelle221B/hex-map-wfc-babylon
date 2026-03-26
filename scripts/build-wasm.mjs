@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const mode = process.argv[2];
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const wasmOutDir = path.join(repoRoot, "packages", "wfc", "wasm");
+const wasmOutputPath = path.join(wasmOutDir, "wfc_core_bg.wasm");
 
 if (mode !== "dev" && mode !== "release") {
   console.error('Usage: node ./scripts/build-wasm.mjs <dev|release>');
@@ -10,8 +15,8 @@ if (mode !== "dev" && mode !== "release") {
 }
 
 const wasmPath = mode === "release"
-  ? "./target/wasm32-unknown-unknown/release/wfc_core.wasm"
-  : "./target/wasm32-unknown-unknown/debug/wfc_core.wasm";
+  ? path.join(repoRoot, "target", "wasm32-unknown-unknown", "release", "wfc_core.wasm")
+  : path.join(repoRoot, "target", "wasm32-unknown-unknown", "debug", "wfc_core.wasm");
 
 const steps = [
   {
@@ -29,7 +34,7 @@ const steps = [
   {
     name: "wasm-bindgen",
     command: "wasm-bindgen",
-    args: ["--target", "web", wasmPath, "--out-dir", "./packages/wfc/wasm"],
+    args: ["--target", "web", wasmPath, "--out-dir", wasmOutDir],
   },
   ...(mode === "release"
     ? [{
@@ -39,9 +44,9 @@ const steps = [
           "-Oz",
           "--enable-bulk-memory",
           "--enable-nontrapping-float-to-int",
-          "./packages/wfc/wasm/wfc_core_bg.wasm",
+          wasmOutputPath,
           "-o",
-          "./packages/wfc/wasm/wfc_core_bg.wasm",
+          wasmOutputPath,
         ],
       }]
     : []),
@@ -57,6 +62,7 @@ console.log(`[build:wasm:${mode}] complete`);
 function runStep(command, args, label) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
+      cwd: repoRoot,
       stdio: "inherit",
     });
 

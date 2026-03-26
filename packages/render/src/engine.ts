@@ -34,6 +34,23 @@ function errorDetails(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isAdapterUnavailableError(error: unknown): boolean {
+  const message = errorDetails(error).toLowerCase();
+  const adapterRequestPhrases = [
+    "requestadapter",
+    "request adapter",
+    "failed to request adapter",
+    "unable to request adapter",
+    "could not request adapter",
+    "could not retrieve a webgpu adapter",
+    "no adapter",
+    "no compatible adapter",
+    "no compatible gpu adapter",
+    "adapter is null",
+  ];
+  return adapterRequestPhrases.some((phrase) => message.includes(phrase));
+}
+
 export async function createEngine(canvas: HTMLCanvasElement): Promise<WebGPUEngine> {
   if (!("gpu" in navigator) || !navigator.gpu) {
     throw new WebGpuInitError(
@@ -42,36 +59,10 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<WebGPUEng
     );
   }
 
-  let adapter: GPUAdapter | null = null;
-  let adapterError: unknown;
-
-  try {
-    adapter = (await navigator.gpu.requestAdapter({ powerPreference: "high-performance" })) ?? null;
-  } catch (error) {
-    adapterError = error;
-  }
-
-  if (!adapter) {
-    try {
-      adapter = (await navigator.gpu.requestAdapter()) ?? null;
-    } catch (error) {
-      adapterError ??= error;
-    }
-  }
-
-  if (!adapter) {
-    const details = adapterError
-      ? ` Failed to request adapter: ${errorDetails(adapterError)}`
-      : "";
-    throw new WebGpuInitError(
-      "adapterUnavailable",
-      `No WebGPU adapter was available.${details}`,
-    );
-  }
-
   const engine = new WebGPUEngine(canvas, {
     antialias: true,
     adaptToDeviceRatio: true,
+    powerPreference: "high-performance",
   });
 
   try {
@@ -79,6 +70,14 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<WebGPUEng
     return engine;
   } catch (error) {
     engine.dispose();
+
+    if (isAdapterUnavailableError(error)) {
+      throw new WebGpuInitError(
+        "adapterUnavailable",
+        `No WebGPU adapter was available. Failed to request adapter: ${errorDetails(error)}`,
+      );
+    }
+
     throw new WebGpuInitError(
       "initFailed",
       `Failed to initialize Babylon WebGPUEngine: ${errorDetails(error)}`,

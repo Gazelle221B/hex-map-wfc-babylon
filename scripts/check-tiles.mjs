@@ -231,28 +231,61 @@ function unwrapExpression(node) {
 function parseRustTiles(filePath) {
   const sourceText = readFileSync(filePath, "utf8");
   const highEdgeConstants = parseHighEdgeConstants(sourceText);
-  return sourceText
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("tile("))
-    .map((line) => {
-      const normalizedLine = line.endsWith(",") ? line.slice(0, -1) : line;
-      const { content } = extractDelimited(normalizedLine, normalizedLine.indexOf("("), "(", ")");
-      const args = splitTopLevel(content);
-      if (args.length !== 7) {
-        throw new Error(`Expected 7 arguments for Rust tile definition, got ${args.length}.`);
-      }
+  const tileListBody = extractRustTileListBody(sourceText);
+  const tiles = [];
+  let searchFrom = 0;
 
-      return {
-        name: parseRustString(args[0]),
-        mesh: parseRustString(args[1]),
-        edges: parseRustEdges(args[2]),
-        weight: Number(args[3]),
-        preventChaining: parseRustBoolean(args[4]),
-        highEdges: parseRustHighEdges(args[5], highEdgeConstants),
-        levelIncrement: Number(args[6]),
-      };
+  while (searchFrom < tileListBody.length) {
+    const openParenIndex = findNextRustInvocation(tileListBody, "tile", null, "(", searchFrom);
+    if (openParenIndex === -1) {
+      break;
+    }
+
+    const { content, end } = extractDelimited(tileListBody, openParenIndex, "(", ")");
+    const args = splitTopLevel(content);
+    if (args.length !== 7) {
+      throw new Error(`Expected 7 arguments for Rust tile definition, got ${args.length}.`);
+    }
+
+    tiles.push({
+      name: parseRustString(args[0]),
+      mesh: parseRustString(args[1]),
+      edges: parseRustEdges(args[2]),
+      weight: Number(args[3]),
+      preventChaining: parseRustBoolean(args[4]),
+      highEdges: parseRustHighEdges(args[5], highEdgeConstants),
+      levelIncrement: Number(args[6]),
     });
+
+    searchFrom = end + 1;
+  }
+
+  if (tiles.length === 0) {
+    throw new Error("Could not find any tile(...) definitions in build_tile_list().");
+  }
+
+  return tiles;
+}
+
+function extractRustTileListBody(sourceText) {
+  const buildTileListMatch = /\b(?:pub\s+)?fn\s+build_tile_list\s*\(/.exec(sourceText);
+  if (!buildTileListMatch) {
+    throw new Error("Could not find build_tile_list() in packages/wfc/src/tile.rs.");
+  }
+
+  const functionBodyStart = sourceText.indexOf("{", buildTileListMatch.index + buildTileListMatch[0].length);
+  if (functionBodyStart === -1) {
+    throw new Error("Could not find the build_tile_list() function body.");
+  }
+
+  const { content: functionBody } = extractDelimited(sourceText, functionBodyStart, "{", "}");
+  const vecOpenBracketIndex = findNextRustInvocation(functionBody, "vec", "!", "[");
+  if (vecOpenBracketIndex === -1) {
+    throw new Error("Could not find vec![...] inside build_tile_list().");
+  }
+
+  const { content: tileListBody } = extractDelimited(functionBody, vecOpenBracketIndex, "[", "]");
+  return tileListBody;
 }
 
 function parseHighEdgeConstants(sourceText) {
@@ -265,7 +298,16 @@ function parseHighEdgeConstants(sourceText) {
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean)
-      .map((value) => DIRECTION_ORDER[Number(value)]);
+      .map((value) => {
+        const index = Number(value);
+        if (!Number.isInteger(index) || index < 0 || index >= DIRECTION_ORDER.length) {
+          throw new Error(
+            `Invalid direction index "${value}" in high edge constant "${name}". `
+            + `Expected an integer between 0 and ${DIRECTION_ORDER.length - 1}.`,
+          );
+        }
+        return DIRECTION_ORDER[index];
+      });
     constants.set(name, directions);
   }
 
@@ -349,6 +391,16 @@ function extractDelimited(sourceText, openIndex, openChar, closeChar) {
       continue;
     }
 
+    if (sourceText.startsWith("//", index)) {
+      index = advanceRustLineComment(sourceText, index) - 1;
+      continue;
+    }
+
+    if (sourceText.startsWith("/*", index)) {
+      index = advanceRustBlockComment(sourceText, index) - 1;
+      continue;
+    }
+
     if (char === "\"") {
       inString = true;
       continue;
@@ -400,6 +452,16 @@ function splitTopLevel(sourceText) {
       continue;
     }
 
+    if (sourceText.startsWith("//", index)) {
+      index = advanceRustLineComment(sourceText, index) - 1;
+      continue;
+    }
+
+    if (sourceText.startsWith("/*", index)) {
+      index = advanceRustBlockComment(sourceText, index) - 1;
+      continue;
+    }
+
     if (char === "\"") {
       inString = true;
       continue;
@@ -447,4 +509,129 @@ function splitTopLevel(sourceText) {
   }
 
   return parts;
+}
+
+function findNextRustInvocation(sourceText, name, separator, openChar, fromIndex = 0) {
+  let inString = false;
+  let escaped = false;
+
+  for (let index = fromIndex; index < sourceText.length; index += 1) {
+    const char = sourceText[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (sourceText.startsWith("//", index)) {
+      index = advanceRustLineComment(sourceText, index) - 1;
+      continue;
+    }
+
+    if (sourceText.startsWith("/*", index)) {
+      index = advanceRustBlockComment(sourceText, index) - 1;
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (
+      sourceText.startsWith(name, index)
+      && isRustIdentifierBoundary(sourceText[index - 1])
+      && isRustIdentifierBoundary(sourceText[index + name.length])
+    ) {
+      let nextIndex = skipRustTrivia(sourceText, index + name.length);
+
+      if (separator !== null) {
+        if (sourceText[nextIndex] !== separator) {
+          continue;
+        }
+        nextIndex = skipRustTrivia(sourceText, nextIndex + 1);
+      }
+
+      if (sourceText[nextIndex] === openChar) {
+        return nextIndex;
+      }
+    }
+  }
+
+  return -1;
+}
+
+function skipRustTrivia(sourceText, fromIndex) {
+  let index = fromIndex;
+
+  while (index < sourceText.length) {
+    const char = sourceText[index];
+
+    if (/\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+
+    if (sourceText.startsWith("//", index)) {
+      index = advanceRustLineComment(sourceText, index);
+      continue;
+    }
+
+    if (sourceText.startsWith("/*", index)) {
+      index = advanceRustBlockComment(sourceText, index);
+      continue;
+    }
+
+    break;
+  }
+
+  return index;
+}
+
+function advanceRustLineComment(sourceText, startIndex) {
+  let index = startIndex + 2;
+  while (index < sourceText.length && sourceText[index] !== "\n") {
+    index += 1;
+  }
+  return index;
+}
+
+function advanceRustBlockComment(sourceText, startIndex) {
+  let depth = 1;
+  let index = startIndex + 2;
+
+  while (index < sourceText.length) {
+    if (sourceText.startsWith("/*", index)) {
+      depth += 1;
+      index += 2;
+      continue;
+    }
+
+    if (sourceText.startsWith("*/", index)) {
+      depth -= 1;
+      index += 2;
+      if (depth === 0) {
+        return index;
+      }
+      continue;
+    }
+
+    index += 1;
+  }
+
+  throw new Error("Unterminated block comment in Rust source.");
+}
+
+function isRustIdentifierBoundary(char) {
+  return char === undefined || !/[A-Za-z0-9_]/.test(char);
 }
