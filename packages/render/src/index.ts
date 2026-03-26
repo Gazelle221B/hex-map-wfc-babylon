@@ -12,6 +12,8 @@ import { PlacementMeshLayer } from "./placement-mesh.js";
 import { createScene } from "./scene.js";
 import { createTilePool, type TilePool } from "./tile-pool.js";
 
+export { WebGpuInitError } from "./engine.js";
+
 export interface HexRenderer {
   addGrid(result: GridResult): void;
   addPlacements(items: readonly PlacementItem[]): void;

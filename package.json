@@ -4,9 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:wasm": "cargo build --release --target wasm32-unknown-unknown -p wfc-core && wasm-bindgen --target web ./target/wasm32-unknown-unknown/release/wfc_core.wasm --out-dir ./packages/wfc/wasm && wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int ./packages/wfc/wasm/wfc_core_bg.wasm -o ./packages/wfc/wasm/wfc_core_bg.wasm",
-    "dev": "pnpm run build:wasm && vite",
-    "build": "pnpm run build:wasm && vite build",
+    "build:wasm": "node ./scripts/build-wasm.mjs release",
+    "build:wasm:dev": "node ./scripts/build-wasm.mjs dev",
+    "build:wasm:release": "node ./scripts/build-wasm.mjs release",
+    "dev": "pnpm run build:wasm:dev && vite",
+    "build": "pnpm run build:wasm:release && vite build",
+    "check:types": "pnpm exec tsc --noEmit -p packages/types/tsconfig.json && pnpm exec tsc --noEmit -p packages/wfc/tsconfig.json && pnpm exec tsc --noEmit -p packages/render/tsconfig.json && pnpm exec tsc --noEmit -p packages/app/tsconfig.json",
+    "check:tiles": "node ./scripts/check-tiles.mjs",
+    "check": "cargo test -p wfc-core && pnpm run check:types && pnpm run check:tiles",
     "test:rust": "cargo test -p wfc-core",
     "test": "pnpm run test:rust"
   },

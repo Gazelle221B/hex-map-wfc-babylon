@@ -1,3 +1,5 @@
+export type WorkerFatalPhase = "init" | "runtime";
+
 /** Messages sent to the WFC worker. */
 export type WorkerRequest =
   | { type: "init"; seed: number }
@@ -12,6 +14,7 @@ export type WorkerResponse =
   | { type: "result"; id: string; data: SolveResultData }
   | { type: "allResults"; id: string; data: SolveResultData[] }
   | { type: "placements"; id: string; data: PlacementData[] }
+  | { type: "fatal"; phase: WorkerFatalPhase; message: string }
   | { type: "error"; id: string; message: string };
 
 /** A single tile in the solve result. */
