@@ -94,6 +94,12 @@ function buildGridContribution(cells: Int32Array): Map<string, Float32Array> {
   const stride = 5;
   const groups = new Map<string, number[]>();
   const size = HEX_WIDTH / 2;
+  const sqrt3 = Math.sqrt(3);
+  const sizeTimesSqrt3 = size * sqrt3;
+  const sizeTimesSqrt3Over2 = size * (sqrt3 / 2);
+  const sizeTimesThreeOver2 = size * (3 / 2);
+  const rotationStep = Math.PI / 3;
+  const unitScale = new Vector3(1, 1, 1);
 
   for (let index = 0; index < cells.length; index += stride) {
     const q = cells[index];
@@ -106,12 +112,12 @@ function buildGridContribution(cells: Int32Array): Map<string, Float32Array> {
       continue;
     }
 
-    const worldX = size * (Math.sqrt(3) * q + Math.sqrt(3) / 2 * r);
-    const worldZ = size * (3 / 2 * r);
+    const worldX = sizeTimesSqrt3 * q + sizeTimesSqrt3Over2 * r;
+    const worldZ = sizeTimesThreeOver2 * r;
     const worldY = level * LEVEL_HEIGHT;
     const matrix = Matrix.Compose(
-      Vector3.One(),
-      Quaternion.FromEulerAngles(0, rotation * (Math.PI / 3), 0),
+      unitScale,
+      Quaternion.FromEulerAngles(0, rotation * rotationStep, 0),
       new Vector3(worldX, worldY, worldZ),
     );
 

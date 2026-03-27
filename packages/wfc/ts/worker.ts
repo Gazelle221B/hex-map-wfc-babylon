@@ -8,8 +8,12 @@ import type {
 
 let engine: WfcEngine | null = null;
 
+type TransferPostingScope = {
+  postMessage(message: WorkerResponse, transfer: Transferable[]): void;
+};
+
 function post(msg: WorkerResponse, transfer: Transferable[] = []): void {
-  self.postMessage(msg, { transfer });
+  (self as unknown as TransferPostingScope).postMessage(msg, transfer);
 }
 
 function postFatal(phase: WorkerFatalPhase, message: string): void {

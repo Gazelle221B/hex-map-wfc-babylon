@@ -510,6 +510,10 @@ function unpackGridCells(cells: Int32Array): CellResult[] {
   const stride = 5;
   const result: CellResult[] = [];
   const size = HEX_WIDTH / 2;
+  const sqrt3 = Math.sqrt(3);
+  const sizeTimesSqrt3 = size * sqrt3;
+  const sizeTimesSqrt3Over2 = size * (sqrt3 / 2);
+  const sizeTimesThreeOver2 = size * (3 / 2);
 
   for (let index = 0; index < cells.length; index += stride) {
     const q = cells[index];
@@ -517,8 +521,8 @@ function unpackGridCells(cells: Int32Array): CellResult[] {
     const tileId = cells[index + 2];
     const rotation = cells[index + 3];
     const level = cells[index + 4];
-    const worldX = size * (Math.sqrt(3) * q + Math.sqrt(3) / 2 * r);
-    const worldZ = size * (3 / 2 * r);
+    const worldX = sizeTimesSqrt3 * q + sizeTimesSqrt3Over2 * r;
+    const worldZ = sizeTimesThreeOver2 * r;
 
     result.push({
       q,
