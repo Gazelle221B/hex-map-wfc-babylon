@@ -12,6 +12,10 @@ export class WfcEngine {
      */
     generate_placements(grid_q: number, grid_r: number, seed: bigint, offset_x: number, offset_z: number): any;
     /**
+     * Generate packed placements for a solved grid.
+     */
+    generate_placements_packed(grid_q: number, grid_r: number, seed: bigint, offset_x: number, offset_z: number): Float32Array;
+    /**
      * Get the number of cells in the global map.
      */
     global_cell_count(): number;
@@ -33,6 +37,10 @@ export class WfcEngine {
      * Returns a JsSolveResult via serde_wasm_bindgen.
      */
     solve_grid(options: any): any;
+    /**
+     * Solve a single grid and return a packed cell buffer plus metadata.
+     */
+    solve_grid_packed(options: any): any;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -41,11 +49,13 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wfcengine_free: (a: number, b: number) => void;
     readonly wfcengine_generate_placements: (a: number, b: number, c: number, d: number, e: bigint, f: number, g: number) => void;
+    readonly wfcengine_generate_placements_packed: (a: number, b: number, c: number, d: number, e: bigint, f: number, g: number) => void;
     readonly wfcengine_global_cell_count: (a: number) => number;
     readonly wfcengine_new: () => number;
     readonly wfcengine_reset: (a: number) => void;
     readonly wfcengine_solve_all: (a: number, b: number, c: bigint) => void;
     readonly wfcengine_solve_grid: (a: number, b: number, c: number) => void;
+    readonly wfcengine_solve_grid_packed: (a: number, b: number, c: number) => void;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

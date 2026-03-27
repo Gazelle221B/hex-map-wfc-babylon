@@ -1,5 +1,16 @@
-export type { CellResult, GridResult } from "./cell.js";
-export type { PlacementType, PlacementItem } from "./placement.js";
+export type {
+  CellResult,
+  GridResult,
+  PackedGridChunk,
+  PackedGridStatus,
+} from "./cell.js";
+export type {
+  PlacementType,
+  PlacementItem,
+  PlacementRenderSpec,
+  PackedPlacementChunk,
+} from "./placement.js";
+export { resolvePlacementRenderSpec } from "./placement.js";
 export type {
   EdgeType,
   HexDirection,
@@ -16,7 +27,13 @@ export {
 } from "./tile-def.js";
 export type { MapConfig } from "./config.js";
 export { DEFAULT_CONFIG } from "./config.js";
-export type { WfcEvents, RenderEvents, UiEvents } from "./events.js";
+export type {
+  BuildProgress,
+  BuildSummary,
+  WfcEvents,
+  RenderEvents,
+  UiEvents,
+} from "./events.js";
 export {
   HEX_WIDTH,
   HEX_HEIGHT,

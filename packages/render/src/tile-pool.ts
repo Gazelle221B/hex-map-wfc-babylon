@@ -66,6 +66,7 @@ function createTemplateMesh(scene: Scene, meshId: string, material: StandardMate
   mesh.useVertexColors = true;
   mesh.isVisible = false;
   mesh.isPickable = false;
+  mesh.alwaysSelectAsActiveMesh = true;
 
   return mesh;
 }
