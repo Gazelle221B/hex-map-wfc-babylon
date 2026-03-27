@@ -26,6 +26,13 @@ type PendingResolve<T> = {
   reject: (reason: Error) => void;
 };
 
+type WfcOperationName =
+  | "solveGrid"
+  | "solveAll"
+  | "generatePlacements"
+  | "buildAllProgressively"
+  | "reset";
+
 /**
  * Bridge between the main thread and the WFC WASM worker.
  * Provides a Promise-based API for grid solving and placement generation.
@@ -41,7 +48,7 @@ export class WfcBridge {
   private disposed = false;
   private terminalError: Error | null = null;
   private nextId = 0;
-  private buildInFlight = false;
+  private activeOperation: WfcOperationName | null = null;
   private currentSeed: number;
 
   constructor(seed: number) {
@@ -73,26 +80,30 @@ export class WfcBridge {
     gridR: number,
     tileTypes?: number[],
   ): Promise<GridResult> {
-    const gridIndex = gridPositionToIndex(gridQ, gridR);
-    const raw = await this.solveGridRaw(
-      gridQ,
-      gridR,
-      this.seedForGrid(gridIndex),
-      tileTypes,
-    );
-    return normalizeGridResult(raw, gridIndex);
+    return this.runExclusive("solveGrid", async () => {
+      const gridIndex = gridPositionToIndex(gridQ, gridR);
+      const raw = await this.solveGridRaw(
+        gridQ,
+        gridR,
+        this.seedForGrid(gridIndex),
+        tileTypes,
+      );
+      return normalizeGridResult(raw, gridIndex);
+    });
   }
 
   /** Solve all 19 grids. */
   async solveAll(seed: number): Promise<GridResult[]> {
-    this.currentSeed = seed;
-    this.reset();
-    const results: GridResult[] = [];
-    for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
-      const raw = await this.solveGridRaw(pos.q, pos.r, this.seedForGrid(gridIndex, seed));
-      results.push(normalizeGridResult(raw, gridIndex));
-    }
-    return results;
+    return this.runExclusive("solveAll", async () => {
+      this.currentSeed = seed;
+      this.postResetUnsafe();
+      const results: GridResult[] = [];
+      for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
+        const raw = await this.solveGridRaw(pos.q, pos.r, this.seedForGrid(gridIndex, seed));
+        results.push(normalizeGridResult(raw, gridIndex));
+      }
+      return results;
+    });
   }
 
   /** Generate placements for a solved set of grids. */
@@ -100,21 +111,23 @@ export class WfcBridge {
     grids: readonly GridResult[],
     seed: number,
   ): Promise<PlacementItem[]> {
-    this.currentSeed = seed;
-    const placements = await Promise.all(
-      grids.map(async (grid) => {
-        const pos = gridIndexToPosition(grid.gridIndex);
-        const raw = await this.generatePlacementsPackedRaw(
-          pos.q,
-          pos.r,
-          this.seedForGrid(grid.gridIndex, seed),
-          0,
-          0,
-        );
-        return unpackPlacementItems(raw);
-      }),
-    );
-    return placements.flat();
+    return this.runExclusive("generatePlacements", async () => {
+      this.currentSeed = seed;
+      const placements = await Promise.all(
+        grids.map(async (grid) => {
+          const pos = gridIndexToPosition(grid.gridIndex);
+          const raw = await this.generatePlacementsPackedRaw(
+            pos.q,
+            pos.r,
+            this.seedForGrid(grid.gridIndex, seed),
+            0,
+            0,
+          );
+          return unpackPlacementItems(raw);
+        }),
+      );
+      return placements.flat();
+    });
   }
 
   subscribe(events: Partial<WfcEvents>): () => void {
@@ -125,18 +138,13 @@ export class WfcBridge {
   }
 
   async buildAllProgressively(seed: number): Promise<BuildSummary> {
-    if (this.buildInFlight) {
-      throw new Error("A progressive build is already running.");
-    }
+    return this.runExclusive("buildAllProgressively", async () => {
+      this.currentSeed = seed;
+      const total = ALL_GRID_POSITIONS.length;
+      let solvedCount = 0;
+      let fallbackCount = 0;
 
-    this.buildInFlight = true;
-    this.currentSeed = seed;
-    const total = ALL_GRID_POSITIONS.length;
-    let solvedCount = 0;
-    let fallbackCount = 0;
-
-    try {
-      this.reset();
+      this.postResetUnsafe();
 
       for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
         const raw = await this.solveGridRaw(
@@ -198,13 +206,35 @@ export class WfcBridge {
       };
       this.emitAllSolved(summary);
       return summary;
-    } finally {
-      this.buildInFlight = false;
-    }
+    });
   }
 
   private seedForGrid(gridIndex: number, baseSeed = this.currentSeed): number {
     return baseSeed + gridIndex;
+  }
+
+  private assertIdle(operationName: WfcOperationName): void {
+    this.assertActiveWorker();
+    if (this.activeOperation) {
+      throw new WfcBridgeError(
+        "busy",
+        `Cannot start ${operationName} while ${this.activeOperation} is in progress.`,
+      );
+    }
+  }
+
+  private async runExclusive<T>(
+    operationName: WfcOperationName,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    this.assertIdle(operationName);
+    this.activeOperation = operationName;
+
+    try {
+      return await fn();
+    } finally {
+      this.activeOperation = null;
+    }
   }
 
   private async solveGridRaw(
@@ -248,7 +278,8 @@ export class WfcBridge {
     if (this.disposed || this.terminalError) {
       return;
     }
-    this.post({ type: "reset" }, "runtime");
+    this.assertIdle("reset");
+    this.postResetUnsafe();
   }
 
   /** Terminate the worker. */
@@ -281,6 +312,10 @@ export class WfcBridge {
       const details = error instanceof Error ? error.message : String(error);
       this.handleFatal(phase, `Failed to post a message to the WFC worker: ${details}`);
     }
+  }
+
+  private postResetUnsafe(): void {
+    this.post({ type: "reset" }, "runtime");
   }
 
   private async request<T>(msg: WorkerRequest, id: string): Promise<T> {

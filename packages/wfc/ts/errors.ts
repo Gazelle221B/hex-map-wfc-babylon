@@ -1,11 +1,15 @@
 import type { WorkerFatalPhase } from "./types.js";
 
-export type WfcBridgeErrorKind = "disposed" | "fatal";
+export type WfcBridgeErrorKind = "busy" | "disposed" | "fatal";
 
 function defaultUserMessage(
   kind: WfcBridgeErrorKind,
   phase?: WorkerFatalPhase,
 ): string {
+  if (kind === "busy") {
+    return "Map generation is already running. Wait for it to finish and try again.";
+  }
+
   if (kind === "disposed") {
     return "The map generator stopped before finishing. Reload the page and try again.";
   }

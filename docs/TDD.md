@@ -406,6 +406,7 @@ export class WfcBridge {
     grids: readonly GridResult[],
     seed: number,
   ): Promise<readonly PlacementItem[]>;
+  reset(): void;
   subscribe(events: Partial<WfcEvents>): () => void;
   dispose(): void;
 }
@@ -414,6 +415,8 @@ export class WfcBridge {
 `worker.ts` は Web Worker 内で WASM を初期化し、`postMessage` / `onmessage` でメインスレッドと通信する。`bridge.ts` は Worker への呼び出しを Promise でラップする薄いファサードである。
 
 `solveGrid()` は単独実行でも `baseSeed + gridIndex` を使う。したがって、同じベース seed と同じグリッド座標なら、単独 solve と `solveAll()` / `buildAllProgressively()` は同じ seed 規則で実行される。
+
+`WfcBridge` は単一の `WfcEngine.global_map` を共有するため、`solveGrid()`、`solveAll()`、`generatePlacements()`、`buildAllProgressively()`、`reset()` は同時に 1 つしか実行できない。並行呼び出しは queue されず、`WfcBridgeError` の `kind === "busy"` で即失敗する。
 
 ### 4.3 @hex/render — Babylon.js シーン構築
 
