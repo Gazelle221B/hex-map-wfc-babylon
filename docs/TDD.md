@@ -386,27 +386,34 @@ strip = true
 ```typescript
 // ts/bridge.ts
 import type {
+  BuildSummary,
   GridResult,
   PlacementItem,
   WfcEvents,
-  MapConfig,
 } from "@hex/types";
 
-export interface WfcBridge {
-  solveGrid(gridIndex: number): Promise<GridResult>;
-  solveAll(): Promise<readonly GridResult[]>;
+export class WfcBridge {
+  constructor(seed: number);
+  ready(): Promise<void>;
+  solveGrid(
+    gridQ: number,
+    gridR: number,
+    tileTypes?: number[],
+  ): Promise<GridResult>;
+  solveAll(seed: number): Promise<readonly GridResult[]>;
   buildAllProgressively(seed: number): Promise<BuildSummary>;
   generatePlacements(
     grids: readonly GridResult[],
+    seed: number,
   ): Promise<readonly PlacementItem[]>;
   subscribe(events: Partial<WfcEvents>): () => void;
   dispose(): void;
 }
-
-export function createWfcBridge(config: MapConfig): Promise<WfcBridge>;
 ```
 
 `worker.ts` は Web Worker 内で WASM を初期化し、`postMessage` / `onmessage` でメインスレッドと通信する。`bridge.ts` は Worker への呼び出しを Promise でラップする薄いファサードである。
+
+`solveGrid()` は単独実行でも `baseSeed + gridIndex` を使う。したがって、同じベース seed と同じグリッド座標なら、単独 solve と `solveAll()` / `buildAllProgressively()` は同じ seed 規則で実行される。
 
 ### 4.3 @hex/render — Babylon.js シーン構築
 

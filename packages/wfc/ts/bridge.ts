@@ -74,7 +74,12 @@ export class WfcBridge {
     tileTypes?: number[],
   ): Promise<GridResult> {
     const gridIndex = gridPositionToIndex(gridQ, gridR);
-    const raw = await this.solveGridRaw(gridQ, gridR, this.currentSeed, tileTypes);
+    const raw = await this.solveGridRaw(
+      gridQ,
+      gridR,
+      this.seedForGrid(gridIndex),
+      tileTypes,
+    );
     return normalizeGridResult(raw, gridIndex);
   }
 
@@ -84,7 +89,7 @@ export class WfcBridge {
     this.reset();
     const results: GridResult[] = [];
     for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
-      const raw = await this.solveGridRaw(pos.q, pos.r, seed + gridIndex);
+      const raw = await this.solveGridRaw(pos.q, pos.r, this.seedForGrid(gridIndex, seed));
       results.push(normalizeGridResult(raw, gridIndex));
     }
     return results;
@@ -99,7 +104,13 @@ export class WfcBridge {
     const placements = await Promise.all(
       grids.map(async (grid) => {
         const pos = gridIndexToPosition(grid.gridIndex);
-        const raw = await this.generatePlacementsPackedRaw(pos.q, pos.r, seed + grid.gridIndex, 0, 0);
+        const raw = await this.generatePlacementsPackedRaw(
+          pos.q,
+          pos.r,
+          this.seedForGrid(grid.gridIndex, seed),
+          0,
+          0,
+        );
         return unpackPlacementItems(raw);
       }),
     );
@@ -128,7 +139,11 @@ export class WfcBridge {
       this.reset();
 
       for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
-        const raw = await this.solveGridRaw(pos.q, pos.r, seed + gridIndex);
+        const raw = await this.solveGridRaw(
+          pos.q,
+          pos.r,
+          this.seedForGrid(gridIndex, seed),
+        );
         const chunk: PackedGridChunk = {
           gridIndex,
           status: raw.status,
@@ -162,7 +177,7 @@ export class WfcBridge {
         const items = await this.generatePlacementsPackedRaw(
           pos.q,
           pos.r,
-          seed + gridIndex,
+          this.seedForGrid(gridIndex, seed),
           0,
           0,
         );
@@ -186,6 +201,10 @@ export class WfcBridge {
     } finally {
       this.buildInFlight = false;
     }
+  }
+
+  private seedForGrid(gridIndex: number, baseSeed = this.currentSeed): number {
+    return baseSeed + gridIndex;
   }
 
   private async solveGridRaw(

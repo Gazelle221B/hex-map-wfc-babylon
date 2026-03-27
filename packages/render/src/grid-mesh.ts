@@ -33,7 +33,6 @@ export class GridMeshLayer {
   }
 
   addPackedGrid(chunk: PackedGridChunk): void {
-    this.removeGrid(chunk.gridIndex);
     this.contributions.set(chunk.gridIndex, buildGridContribution(chunk.cells));
     this.sync();
   }
@@ -45,12 +44,6 @@ export class GridMeshLayer {
 
   dispose(): void {
     this.clear();
-  }
-
-  private removeGrid(gridIndex: number): void {
-    if (this.contributions.delete(gridIndex)) {
-      this.sync();
-    }
   }
 
   private sync(): void {
