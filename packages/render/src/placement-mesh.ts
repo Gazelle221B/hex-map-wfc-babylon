@@ -27,7 +27,14 @@ export class PlacementMeshLayer {
   }
 
   addPlacements(items: readonly PlacementItem[]): void {
-    this.contributions.set(-1, buildPlacementContributionFromItems(items));
+    const nextContribution = buildPlacementContributionFromItems(items);
+    const existingContribution = this.contributions.get(-1);
+    this.contributions.set(
+      -1,
+      existingContribution
+        ? mergePlacementContributions(existingContribution, nextContribution)
+        : nextContribution,
+    );
     this.sync();
   }
 
@@ -142,6 +149,36 @@ function buildPlacementContributionFromItems(items: readonly PlacementItem[]): M
   return new Map(
     [...grouped.entries()].map(([meshId, values]) => [meshId, new Float32Array(values)]),
   );
+}
+
+function mergePlacementContributions(
+  existing: ReadonlyMap<string, Float32Array>,
+  next: ReadonlyMap<string, Float32Array>,
+): Map<string, Float32Array> {
+  const merged = new Map<string, Float32Array>();
+  const keys = new Set([...existing.keys(), ...next.keys()]);
+
+  for (const key of keys) {
+    const left = existing.get(key);
+    const right = next.get(key);
+
+    if (!left) {
+      merged.set(key, right!.slice());
+      continue;
+    }
+
+    if (!right) {
+      merged.set(key, left.slice());
+      continue;
+    }
+
+    const combined = new Float32Array(left.length + right.length);
+    combined.set(left, 0);
+    combined.set(right, left.length);
+    merged.set(key, combined);
+  }
+
+  return merged;
 }
 
 function createPlacementSource(scene: Scene, material: StandardMaterial, meshId: string): Mesh {

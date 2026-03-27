@@ -20,8 +20,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function initialize(seed: number): Promise<void> {
-  void seed;
+async function initialize(): Promise<void> {
   const previousEngine = engine;
 
   try {
@@ -102,7 +101,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
 
   switch (msg.type) {
     case "init":
-      void initialize(msg.seed);
+      void initialize();
       break;
     case "solve":
       handleSolve(msg.id, msg.gridQ, msg.gridR, msg.seed, msg.tileTypes);

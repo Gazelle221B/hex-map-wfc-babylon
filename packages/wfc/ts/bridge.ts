@@ -59,7 +59,7 @@ export class WfcBridge {
     this.worker.addEventListener("message", this.onMessage);
     this.worker.addEventListener("error", this.onWorkerError);
     this.worker.addEventListener("messageerror", this.onWorkerMessageError);
-    this.post({ type: "init", seed }, "init");
+    this.post({ type: "init" }, "init");
   }
 
   /** Wait for the WASM module to initialize. */

@@ -10,7 +10,7 @@ export type WorkerFatalPhase = "init" | "runtime";
 
 /** Messages sent to the WFC worker. */
 export type WorkerRequest =
-  | { type: "init"; seed: number }
+  | { type: "init" }
   | { type: "solve"; id: string; gridQ: number; gridR: number; seed: number; tileTypes?: number[] }
   | { type: "placements"; id: string; gridQ: number; gridR: number; seed: number; offsetX: number; offsetZ: number }
   | { type: "reset" };
