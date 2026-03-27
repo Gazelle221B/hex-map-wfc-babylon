@@ -2,6 +2,8 @@ import type { Camera, Scene } from "@babylonjs/core";
 import type {
   GridResult,
   MapConfig,
+  PackedGridChunk,
+  PackedPlacementChunk,
   PlacementItem,
   RenderEvents,
 } from "@hex/types";
@@ -16,7 +18,9 @@ export { WebGpuInitError } from "./engine.js";
 
 export interface HexRenderer {
   addGrid(result: GridResult): void;
+  addPackedGrid(chunk: PackedGridChunk): void;
   addPlacements(items: readonly PlacementItem[]): void;
+  addPackedPlacements(chunk: PackedPlacementChunk): void;
   clear(): void;
   updateConfig(config: Partial<MapConfig>): void;
   subscribe(events: Partial<RenderEvents>): () => void;
@@ -67,8 +71,14 @@ export async function createRenderer(
     addGrid(result) {
       gridLayer.addGrid(result);
     },
+    addPackedGrid(chunk) {
+      gridLayer.addPackedGrid(chunk);
+    },
     addPlacements(items) {
       placementLayer.addPlacements(items);
+    },
+    addPackedPlacements(chunk) {
+      placementLayer.addPackedPlacements(chunk);
     },
     clear() {
       gridLayer.clear();

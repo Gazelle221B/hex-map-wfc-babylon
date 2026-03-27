@@ -218,6 +218,7 @@ name = "wfc-core"
 version = "0.1.0"
 dependencies = [
  "fastrand",
+ "js-sys",
  "noise",
  "serde",
  "serde-wasm-bindgen",

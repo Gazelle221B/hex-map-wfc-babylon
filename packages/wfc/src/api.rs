@@ -1,9 +1,11 @@
+use js_sys::{Float32Array, Int32Array, Object, Reflect};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use crate::hex::CubeCoord;
 use crate::multi_grid::{
-    GlobalCellMap, TILE_RADIUS, all_grid_positions, grid_center, local_to_global, solve_grid,
+    GlobalCellMap, GridSolveResult, TILE_RADIUS, all_grid_positions, grid_center, local_to_global,
+    solve_grid,
 };
 use crate::placement::{
     PlacementConfig, PlacementItem, TileInfo, generate_placements, generate_road_buildings,
@@ -115,6 +117,24 @@ impl WfcEngine {
             .map_err(|e| JsValue::from_str(&format!("serialization error: {e}")))
     }
 
+    /// Solve a single grid and return a packed cell buffer plus metadata.
+    pub fn solve_grid_packed(&mut self, options: JsValue) -> Result<JsValue, JsValue> {
+        let opts: SolveOptions = serde_wasm_bindgen::from_value(options)
+            .map_err(|e| JsValue::from_str(&format!("invalid options: {e}")))?;
+
+        let grid_pos = CubeCoord::new(opts.grid_q, opts.grid_r);
+        let allowed = opts.tile_types.as_deref();
+        let result = solve_grid(grid_pos, &self.global_map, opts.seed, allowed);
+
+        if result.success {
+            let grid_key = grid_pos.key();
+            self.global_map.remove_grid(&grid_key);
+            self.global_map.insert_result(&result.tiles, &grid_key);
+        }
+
+        packed_solve_value(&result)
+    }
+
     /// Solve all 19 grids in order (center first, then outward).
     /// Returns an array of JsSolveResult.
     pub fn solve_all(&mut self, seed: u64) -> Result<JsValue, JsValue> {
@@ -211,9 +231,78 @@ impl WfcEngine {
             .map_err(|e| JsValue::from_str(&format!("serialization error: {e}")))
     }
 
+    /// Generate packed placements for a solved grid.
+    pub fn generate_placements_packed(
+        &self,
+        grid_q: i32,
+        grid_r: i32,
+        seed: u64,
+        offset_x: f64,
+        offset_z: f64,
+    ) -> Result<Float32Array, JsValue> {
+        let placements = self.collect_placements(grid_q, grid_r, seed, offset_x, offset_z)?;
+        Ok(Float32Array::from(pack_placements(&placements).as_slice()))
+    }
+
     /// Get the number of cells in the global map.
     pub fn global_cell_count(&self) -> usize {
         self.global_map.len()
+    }
+}
+
+impl WfcEngine {
+    fn collect_placements(
+        &self,
+        grid_q: i32,
+        grid_r: i32,
+        seed: u64,
+        offset_x: f64,
+        offset_z: f64,
+    ) -> Result<Vec<PlacementItem>, JsValue> {
+        let grid_pos = CubeCoord::new(grid_q, grid_r);
+        let center = grid_center(grid_pos, TILE_RADIUS);
+
+        let local_coords = CubeCoord::new(0, 0).cells_in_radius(TILE_RADIUS);
+        let tile_infos: Vec<TileInfo> = local_coords
+            .iter()
+            .filter_map(|&local| {
+                let global = local_to_global(local, center);
+                let cell = self.global_map.get(&global.key())?;
+                let tile_def = &self.tile_defs[cell.tile_id as usize];
+                let is_grass = tile_def.edges.iter().all(|e| *e == EdgeType::Grass);
+                let road_edges: usize = tile_def
+                    .edges
+                    .iter()
+                    .filter(|e| **e == EdgeType::Road)
+                    .count();
+
+                Some(TileInfo {
+                    coord: global,
+                    tile_id: cell.tile_id,
+                    rotation: cell.rotation,
+                    level: cell.level,
+                    is_grass,
+                    is_road_dead_end: road_edges == 1,
+                    is_coast_adjacent: tile_def.edges.iter().any(|e| *e == EdgeType::Coast),
+                    has_river: tile_def.edges.iter().any(|e| *e == EdgeType::River),
+                })
+            })
+            .collect();
+
+        let config = PlacementConfig::default();
+        let mut all_placements = Vec::new();
+
+        all_placements.extend(generate_placements(
+            &tile_infos,
+            &config,
+            seed,
+            offset_x,
+            offset_z,
+        ));
+        all_placements.extend(generate_road_buildings(&tile_infos, seed));
+        all_placements.extend(generate_windmills(&tile_infos, seed));
+
+        Ok(all_placements)
     }
 }
 
@@ -239,5 +328,120 @@ fn to_js_placement(p: PlacementItem) -> JsPlacement {
         tile_q: p.tile_q,
         tile_r: p.tile_r,
         tile_level: p.tile_level,
+    }
+}
+
+fn packed_solve_value(result: &GridSolveResult) -> Result<JsValue, JsValue> {
+    let object = Object::new();
+    let cells = Int32Array::from(pack_tiles(&result.tiles).as_slice());
+
+    set_field(&object, "status", &JsValue::from_str(result.status.as_str()))?;
+    set_field(&object, "cells", &cells.into())?;
+    set_field(
+        &object,
+        "dropped_count",
+        &JsValue::from_f64(result.stats.dropped_count as f64),
+    )?;
+    set_field(
+        &object,
+        "backtracks",
+        &JsValue::from_f64(result.stats.backtracks as f64),
+    )?;
+    set_field(&object, "tries", &JsValue::from_f64(result.stats.tries as f64))?;
+    set_field(
+        &object,
+        "local_wfc_attempts",
+        &JsValue::from_f64(result.stats.local_wfc_attempts as f64),
+    )?;
+
+    Ok(object.into())
+}
+
+fn set_field(target: &Object, key: &str, value: &JsValue) -> Result<(), JsValue> {
+    Reflect::set(target, &JsValue::from_str(key), value)
+        .map(|_| ())
+        .map_err(|e| JsValue::from(e))
+}
+
+fn pack_tiles(tiles: &[CollapsedTile]) -> Vec<i32> {
+    let mut packed = Vec::with_capacity(tiles.len() * 5);
+    for tile in tiles {
+        packed.push(tile.q);
+        packed.push(tile.r);
+        packed.push(tile.tile_id as i32);
+        packed.push(tile.rotation as i32);
+        packed.push(tile.level as i32);
+    }
+    packed
+}
+
+fn pack_placements(placements: &[PlacementItem]) -> Vec<f32> {
+    let mut packed = Vec::with_capacity(placements.len() * 6);
+    for item in placements {
+        packed.push(item.placement_type as u8 as f32);
+        packed.push(item.tier as f32);
+        packed.push(item.world_x as f32);
+        packed.push(item.world_y as f32);
+        packed.push(item.world_z as f32);
+        packed.push(item.rotation as f32);
+    }
+    packed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::multi_grid::{GridSolveStatus, solve_grid};
+
+    #[test]
+    fn packed_tiles_have_expected_stride() {
+        let result = solve_grid(CubeCoord::new(0, 0), &GlobalCellMap::new(), 42, None);
+        let packed = pack_tiles(&result.tiles);
+        assert_eq!(packed.len(), result.tiles.len() * 5);
+    }
+
+    #[test]
+    fn packed_placements_have_expected_stride() {
+        let placements = vec![
+            PlacementItem {
+                placement_type: crate::placement::PlacementType::TreeA,
+                tier: 2,
+                world_x: 1.0,
+                world_y: 2.0,
+                world_z: 3.0,
+                rotation: 4.0,
+                tile_q: 0,
+                tile_r: 0,
+                tile_level: 1,
+            },
+            PlacementItem {
+                placement_type: crate::placement::PlacementType::Windmill,
+                tier: 0,
+                world_x: 5.0,
+                world_y: 6.0,
+                world_z: 7.0,
+                rotation: 8.0,
+                tile_q: 1,
+                tile_r: -1,
+                tile_level: 0,
+            },
+        ];
+
+        let packed = pack_placements(&placements);
+        assert_eq!(packed.len(), placements.len() * 6);
+        assert_eq!(packed[0], 0.0);
+        assert_eq!(packed[1], 2.0);
+        assert_eq!(packed[6], 3.0);
+    }
+
+    #[test]
+    fn fallback_water_result_packs_tiles() {
+        let result = solve_grid(CubeCoord::new(0, 0), &GlobalCellMap::new(), 42, Some(&[]));
+        assert_eq!(result.status, GridSolveStatus::FallbackWater);
+        let packed = pack_tiles(&result.tiles);
+        assert_eq!(packed.len(), result.tiles.len() * 5);
+        assert_eq!(packed[2], 1);
+        assert_eq!(packed[3], 0);
+        assert_eq!(packed[4], 0);
     }
 }

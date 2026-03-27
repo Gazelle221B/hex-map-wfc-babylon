@@ -1,11 +1,19 @@
 import init, { WfcEngine } from "../wasm/wfc_core.js";
-import type { WorkerFatalPhase, WorkerRequest, WorkerResponse } from "./types.js";
+import type {
+  PackedSolveResult,
+  WorkerFatalPhase,
+  WorkerRequest,
+  WorkerResponse,
+} from "./types.js";
 
 let engine: WfcEngine | null = null;
-let currentSeed = 0;
 
-function post(msg: WorkerResponse): void {
-  self.postMessage(msg);
+type TransferPostingScope = {
+  postMessage(message: WorkerResponse, transfer: Transferable[]): void;
+};
+
+function post(msg: WorkerResponse, transfer: Transferable[] = []): void {
+  (self as unknown as TransferPostingScope).postMessage(msg, transfer);
 }
 
 function postFatal(phase: WorkerFatalPhase, message: string): void {
@@ -16,7 +24,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function initialize(seed: number): Promise<void> {
+async function initialize(): Promise<void> {
   const previousEngine = engine;
 
   try {
@@ -26,7 +34,6 @@ async function initialize(seed: number): Promise<void> {
     const nextEngine = new WfcEngine();
     previousEngine?.free();
     engine = nextEngine;
-    currentSeed = seed;
     post({ type: "ready" });
   } catch (error) {
     previousEngine?.free();
@@ -35,7 +42,13 @@ async function initialize(seed: number): Promise<void> {
   }
 }
 
-function handleSolve(id: string, gridQ: number, gridR: number, tileTypes?: number[]): void {
+function handleSolve(
+  id: string,
+  gridQ: number,
+  gridR: number,
+  seed: number,
+  tileTypes?: number[],
+): void {
   if (!engine) {
     post({ type: "error", id, message: "engine not initialized" });
     return;
@@ -43,29 +56,16 @@ function handleSolve(id: string, gridQ: number, gridR: number, tileTypes?: numbe
 
   try {
     const options = {
-      seed: BigInt(currentSeed),
+      seed: BigInt(seed),
       grid_q: gridQ,
       grid_r: gridR,
       tile_types: tileTypes ?? null,
     };
-    const result = engine.solve_grid(options);
-    post({ type: "result", id, data: result });
-  } catch (error) {
-    post({ type: "error", id, message: errorMessage(error) });
-  }
-}
-
-function handleSolveAll(id: string, seed: number): void {
-  if (!engine) {
-    post({ type: "error", id, message: "engine not initialized" });
-    return;
-  }
-
-  try {
-    engine.reset();
-    currentSeed = seed;
-    const results = engine.solve_all(BigInt(seed));
-    post({ type: "allResults", id, data: results });
+    const result = engine.solve_grid_packed(options) as PackedSolveResult;
+    post(
+      { type: "result", id, data: result },
+      [result.cells.buffer],
+    );
   } catch (error) {
     post({ type: "error", id, message: errorMessage(error) });
   }
@@ -85,8 +85,8 @@ function handlePlacements(
   }
 
   try {
-    const data = engine.generate_placements(gridQ, gridR, BigInt(seed), offsetX, offsetZ);
-    post({ type: "placements", id, data });
+    const data = engine.generate_placements_packed(gridQ, gridR, BigInt(seed), offsetX, offsetZ);
+    post({ type: "placements", id, data }, [data.buffer]);
   } catch (error) {
     post({ type: "error", id, message: errorMessage(error) });
   }
@@ -105,13 +105,10 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
 
   switch (msg.type) {
     case "init":
-      void initialize(msg.seed);
+      void initialize();
       break;
     case "solve":
-      handleSolve(msg.id, msg.gridQ, msg.gridR, msg.tileTypes);
-      break;
-    case "solveAll":
-      handleSolveAll(msg.id, msg.seed);
+      handleSolve(msg.id, msg.gridQ, msg.gridR, msg.seed, msg.tileTypes);
       break;
     case "placements":
       handlePlacements(msg.id, msg.gridQ, msg.gridR, msg.seed, msg.offsetX, msg.offsetZ);

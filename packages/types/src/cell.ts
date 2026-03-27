@@ -21,3 +21,15 @@ export interface GridResult {
   readonly gridIndex: number;
   readonly cells: readonly CellResult[];
 }
+
+export type PackedGridStatus = "solved" | "fallback_water";
+
+/**
+ * Packed cell payload emitted from the worker.
+ * Stride: [q, r, tileId, rotation, level]
+ */
+export interface PackedGridChunk {
+  readonly gridIndex: number;
+  readonly status: PackedGridStatus;
+  readonly cells: Int32Array;
+}

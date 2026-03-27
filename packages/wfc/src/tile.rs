@@ -25,6 +25,7 @@ pub struct TileDef {
 
 /// Number of elevation levels.
 pub const LEVELS_COUNT: u8 = 5;
+pub const WATER_TILE_ID: u16 = 1;
 
 /// A specific tile state: tile type + rotation + elevation level.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

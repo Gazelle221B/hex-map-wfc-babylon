@@ -6,10 +6,10 @@ export {
   gridPositionToIndex,
 } from "./grid-positions.js";
 export type {
+  PackedSolveResult,
   WorkerFatalPhase,
   WorkerRequest,
   WorkerResponse,
-  SolveResultData,
   TileData,
   PlacementData,
 } from "./types.js";

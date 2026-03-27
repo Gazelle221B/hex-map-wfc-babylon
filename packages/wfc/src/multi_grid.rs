@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use crate::grid::WfcGrid;
 use crate::hex::CubeCoord;
 use crate::solver::{CollapsedTile, SolveResult, Solver};
-use crate::tile::TileState;
+use crate::tile::{TileState, WATER_TILE_ID};
 
 /// Grid-level radius for the hex-of-hex (19 grids at radius 2).
 pub const GRID_RADIUS: i32 = 2;
@@ -54,8 +54,24 @@ pub struct SolveStats {
 }
 
 /// Result of solving a single grid within the multi-grid system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridSolveStatus {
+    Solved,
+    FallbackWater,
+}
+
+impl GridSolveStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GridSolveStatus::Solved => "solved",
+            GridSolveStatus::FallbackWater => "fallback_water",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct GridSolveResult {
+    pub status: GridSolveStatus,
     pub success: bool,
     pub tiles: Vec<CollapsedTile>,
     pub collapse_order: Vec<CollapsedTile>,
@@ -359,14 +375,7 @@ pub fn solve_grid(
     }
 
     // Total failure
-    GridSolveResult {
-        success: false,
-        tiles: Vec::new(),
-        collapse_order: Vec::new(),
-        changed_fixed_cells: changed_fixed,
-        dropped_cubes,
-        stats,
-    }
+    build_fallback_grid_result(global_coords, changed_fixed, dropped_cubes, stats)
 }
 
 /// Attempt a single WFC solve with the given constraints.
@@ -409,9 +418,39 @@ fn build_grid_result(
     stats: SolveStats,
 ) -> GridSolveResult {
     GridSolveResult {
+        status: GridSolveStatus::Solved,
         success: solve_result.success,
         tiles: solve_result.tiles,
         collapse_order: solve_result.collapse_order,
+        changed_fixed_cells: changed_fixed,
+        dropped_cubes,
+        stats,
+    }
+}
+
+fn build_fallback_grid_result(
+    coords: Vec<CubeCoord>,
+    changed_fixed: Vec<CollapsedTile>,
+    dropped_cubes: Vec<CubeCoord>,
+    stats: SolveStats,
+) -> GridSolveResult {
+    let tiles = coords
+        .into_iter()
+        .map(|coord| CollapsedTile {
+            q: coord.q,
+            r: coord.r,
+            s: coord.s,
+            tile_id: WATER_TILE_ID,
+            rotation: 0,
+            level: 0,
+        })
+        .collect();
+
+    GridSolveResult {
+        status: GridSolveStatus::FallbackWater,
+        success: true,
+        tiles,
+        collapse_order: Vec::new(),
         changed_fixed_cells: changed_fixed,
         dropped_cubes,
         stats,
@@ -568,5 +607,30 @@ mod tests {
             result_b.stats
         );
         assert_eq!(result_b.tiles.len(), 217);
+    }
+
+    #[test]
+    fn impossible_allowed_types_fall_back_to_water() {
+        let result = solve_grid(CubeCoord::new(0, 0), &GlobalCellMap::new(), 42, Some(&[]));
+        assert_eq!(result.status, GridSolveStatus::FallbackWater);
+        assert!(result.success);
+        assert_eq!(result.tiles.len(), 217);
+        assert!(result.tiles.iter().all(|tile| {
+            tile.tile_id == WATER_TILE_ID && tile.rotation == 0 && tile.level == 0
+        }));
+    }
+
+    #[test]
+    fn fallback_grid_can_seed_neighbors() {
+        let mut global_map = GlobalCellMap::new();
+        let fallback = solve_grid(CubeCoord::new(0, 0), &global_map, 42, Some(&[]));
+        assert_eq!(fallback.status, GridSolveStatus::FallbackWater);
+
+        let grid_key = CubeCoord::new(0, 0).key();
+        global_map.insert_result(&fallback.tiles, &grid_key);
+
+        let neighbor = solve_grid(CubeCoord::new(1, -1), &global_map, 43, None);
+        assert!(neighbor.success);
+        assert_eq!(neighbor.tiles.len(), 217);
     }
 }

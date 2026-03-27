@@ -1,21 +1,36 @@
+import type {
+  BuildProgress,
+  BuildSummary,
+  PackedGridChunk,
+  PackedGridStatus,
+  PackedPlacementChunk,
+} from "@hex/types";
+
 export type WorkerFatalPhase = "init" | "runtime";
 
 /** Messages sent to the WFC worker. */
 export type WorkerRequest =
-  | { type: "init"; seed: number }
-  | { type: "solve"; id: string; gridQ: number; gridR: number; tileTypes?: number[] }
-  | { type: "solveAll"; id: string; seed: number }
+  | { type: "init" }
+  | { type: "solve"; id: string; gridQ: number; gridR: number; seed: number; tileTypes?: number[] }
   | { type: "placements"; id: string; gridQ: number; gridR: number; seed: number; offsetX: number; offsetZ: number }
   | { type: "reset" };
 
 /** Messages sent from the WFC worker. */
 export type WorkerResponse =
   | { type: "ready" }
-  | { type: "result"; id: string; data: SolveResultData }
-  | { type: "allResults"; id: string; data: SolveResultData[] }
-  | { type: "placements"; id: string; data: PlacementData[] }
+  | { type: "result"; id: string; data: PackedSolveResult }
+  | { type: "placements"; id: string; data: Float32Array }
   | { type: "fatal"; phase: WorkerFatalPhase; message: string }
   | { type: "error"; id: string; message: string };
+
+export interface PackedSolveResult {
+  readonly status: PackedGridStatus;
+  readonly cells: Int32Array;
+  readonly dropped_count: number;
+  readonly backtracks: number;
+  readonly tries: number;
+  readonly local_wfc_attempts: number;
+}
 
 /** A single tile in the solve result. */
 export interface TileData {
@@ -51,3 +66,5 @@ export interface PlacementData {
   readonly tile_r: number;
   readonly tile_level: number;
 }
+
+export type { BuildProgress, BuildSummary, PackedGridChunk, PackedPlacementChunk };

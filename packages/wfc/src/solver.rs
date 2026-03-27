@@ -72,6 +72,10 @@ impl Solver {
         self.collapse_order.clear();
         self.backtracks = 0;
 
+        if grid.cells.values().any(|cell| cell.possibilities.is_empty()) {
+            return self.build_result(grid, false);
+        }
+
         loop {
             // Find the uncollapsed cell with lowest entropy
             let target = self.find_lowest_entropy(grid);

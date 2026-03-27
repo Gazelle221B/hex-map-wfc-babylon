@@ -1,84 +1,132 @@
-import { Mesh } from "@babylonjs/core";
-import { TILE_LIST, type GridResult } from "@hex/types";
+import { Matrix, Quaternion, Vector3 } from "@babylonjs/core";
+import {
+  HEX_WIDTH,
+  LEVEL_HEIGHT,
+  TILE_LIST,
+  type GridResult,
+  type PackedGridChunk,
+} from "@hex/types";
 import type { TilePool } from "./tile-pool.js";
 
 export class GridMeshLayer {
-  private readonly meshes = new Map<number, Mesh>();
+  private readonly contributions = new Map<number, Map<string, Float32Array>>();
+  private readonly activeMeshIds = new Set<string>();
 
   constructor(private readonly tilePool: TilePool) {}
 
   addGrid(result: GridResult): void {
-    this.removeGrid(result.gridIndex);
+    const stride = 5;
+    const cells = new Int32Array(result.cells.length * stride);
+    result.cells.forEach((cell, index) => {
+      const offset = index * stride;
+      cells[offset] = cell.q;
+      cells[offset + 1] = cell.r;
+      cells[offset + 2] = cell.tileId;
+      cells[offset + 3] = cell.rotation;
+      cells[offset + 4] = cell.elevation;
+    });
+    this.addPackedGrid({
+      gridIndex: result.gridIndex,
+      status: "solved",
+      cells,
+    });
+  }
 
-    const clones: Mesh[] = [];
-    for (const cell of result.cells) {
-      const tileDef = TILE_LIST[cell.tileId];
-      if (!tileDef) {
-        continue;
-      }
-
-      const template = this.tilePool.getTemplate(tileDef.mesh);
-      const clone = template.clone(`grid-${result.gridIndex}-cell-${cell.q},${cell.r},${cell.s}`);
-      if (!clone) {
-        continue;
-      }
-
-      clone.isVisible = true;
-      clone.isPickable = false;
-      clone.position.set(cell.worldX, cell.worldY, cell.worldZ);
-      clone.rotation.y = cell.rotation * (Math.PI / 3);
-      clones.push(clone);
-    }
-
-    if (clones.length === 0) {
-      return;
-    }
-
-    let merged: Mesh | null;
-    try {
-      merged = clones.length === 1
-        ? clones[0]
-        : Mesh.MergeMeshes(clones, true, true, undefined, false, true);
-    } catch (error) {
-      for (const clone of clones) {
-        if (!clone.isDisposed()) {
-          clone.dispose();
-        }
-      }
-      throw error;
-    }
-
-    if (!merged) {
-      for (const clone of clones) {
-        if (!clone.isDisposed()) {
-          clone.dispose();
-        }
-      }
-      return;
-    }
-
-    merged.name = `grid-${result.gridIndex}`;
-    merged.useVertexColors = true;
-    merged.alwaysSelectAsActiveMesh = true;
-    this.meshes.set(result.gridIndex, merged);
+  addPackedGrid(chunk: PackedGridChunk): void {
+    this.contributions.set(chunk.gridIndex, buildGridContribution(chunk.cells));
+    this.sync();
   }
 
   clear(): void {
-    for (const mesh of this.meshes.values()) {
-      mesh.dispose();
-    }
-    this.meshes.clear();
+    this.contributions.clear();
+    this.sync();
   }
 
   dispose(): void {
     this.clear();
   }
 
-  private removeGrid(gridIndex: number): void {
-    const mesh = this.meshes.get(gridIndex);
-    if (mesh) {
-      mesh.dispose();
-      this.meshes.delete(gridIndex);
+  private sync(): void {
+    const nextActiveMeshIds = new Set<string>();
+    const grouped = new Map<string, Float32Array[]>();
+
+    for (const contribution of this.contributions.values()) {
+      for (const [meshId, matrices] of contribution.entries()) {
+        nextActiveMeshIds.add(meshId);
+        const bucket = grouped.get(meshId);
+        if (bucket) {
+          bucket.push(matrices);
+        } else {
+          grouped.set(meshId, [matrices]);
+        }
+      }
+    }
+
+    const knownMeshIds = new Set([...this.activeMeshIds, ...nextActiveMeshIds]);
+    for (const meshId of knownMeshIds) {
+      const source = this.tilePool.getTemplate(meshId);
+      const parts = grouped.get(meshId) ?? [];
+
+      if (parts.length === 0) {
+        source.thinInstanceSetBuffer("matrix", new Float32Array(0), 16, true);
+        continue;
+      }
+
+      const totalLength = parts.reduce((sum, item) => sum + item.length, 0);
+      const matrices = new Float32Array(totalLength);
+      let offset = 0;
+      for (const part of parts) {
+        matrices.set(part, offset);
+        offset += part.length;
+      }
+
+      source.thinInstanceSetBuffer("matrix", matrices, 16, true);
+    }
+
+    this.activeMeshIds.clear();
+    for (const meshId of nextActiveMeshIds) {
+      this.activeMeshIds.add(meshId);
     }
   }
+}
+
+function buildGridContribution(cells: Int32Array): Map<string, Float32Array> {
+  const stride = 5;
+  const groups = new Map<string, number[]>();
+  const size = HEX_WIDTH / 2;
+  const sqrt3 = Math.sqrt(3);
+  const sizeTimesSqrt3 = size * sqrt3;
+  const sizeTimesSqrt3Over2 = size * (sqrt3 / 2);
+  const sizeTimesThreeOver2 = size * (3 / 2);
+  const rotationStep = Math.PI / 3;
+  const unitScale = new Vector3(1, 1, 1);
+
+  for (let index = 0; index < cells.length; index += stride) {
+    const q = cells[index];
+    const r = cells[index + 1];
+    const tileId = cells[index + 2];
+    const rotation = cells[index + 3];
+    const level = cells[index + 4];
+    const tileDef = TILE_LIST[tileId];
+    if (!tileDef) {
+      continue;
+    }
+
+    const worldX = sizeTimesSqrt3 * q + sizeTimesSqrt3Over2 * r;
+    const worldZ = sizeTimesThreeOver2 * r;
+    const worldY = level * LEVEL_HEIGHT;
+    const matrix = Matrix.Compose(
+      unitScale,
+      Quaternion.FromEulerAngles(0, rotation * rotationStep, 0),
+      new Vector3(worldX, worldY, worldZ),
+    );
+
+    const bucket = groups.get(tileDef.mesh) ?? [];
+    matrix.copyToArray(bucket, bucket.length);
+    groups.set(tileDef.mesh, bucket);
+  }
+
+  return new Map(
+    [...groups.entries()].map(([meshId, values]) => [meshId, new Float32Array(values)]),
+  );
 }

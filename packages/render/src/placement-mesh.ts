@@ -1,18 +1,24 @@
 import {
-  Color3,
   Matrix,
   Mesh,
   MeshBuilder,
   Quaternion,
-  StandardMaterial,
   Vector3,
-  VertexBuffer,
   type Scene,
 } from "@babylonjs/core";
-import type { PlacementItem } from "@hex/types";
+import {
+  resolvePlacementRenderSpec,
+  type PackedPlacementChunk,
+  type PlacementItem,
+} from "@hex/types";
+import {
+  Color3,
+  StandardMaterial,
+  VertexBuffer,
+} from "@babylonjs/core";
 
 export class PlacementMeshLayer {
-  private readonly items: PlacementItem[] = [];
+  private readonly contributions = new Map<number, Map<string, Float32Array>>();
   private readonly sources = new Map<string, Mesh>();
   private readonly material: StandardMaterial;
 
@@ -21,12 +27,24 @@ export class PlacementMeshLayer {
   }
 
   addPlacements(items: readonly PlacementItem[]): void {
-    this.items.push(...items);
+    const nextContribution = buildPlacementContributionFromItems(items);
+    const existingContribution = this.contributions.get(-1);
+    this.contributions.set(
+      -1,
+      existingContribution
+        ? mergePlacementContributions(existingContribution, nextContribution)
+        : nextContribution,
+    );
+    this.sync();
+  }
+
+  addPackedPlacements(chunk: PackedPlacementChunk): void {
+    this.contributions.set(chunk.gridIndex, buildPlacementContributionFromPacked(chunk.items));
     this.sync();
   }
 
   clear(): void {
-    this.items.length = 0;
+    this.contributions.clear();
     for (const source of this.sources.values()) {
       source.thinInstanceSetBuffer("matrix", new Float32Array(0), 16, true);
     }
@@ -37,18 +55,20 @@ export class PlacementMeshLayer {
       source.dispose();
     }
     this.sources.clear();
-    this.items.length = 0;
+    this.contributions.clear();
     this.material.dispose();
   }
 
   private sync(): void {
-    const grouped = new Map<string, PlacementItem[]>();
-    for (const item of this.items) {
-      const bucket = grouped.get(item.meshId);
-      if (bucket) {
-        bucket.push(item);
-      } else {
-        grouped.set(item.meshId, [item]);
+    const grouped = new Map<string, Float32Array[]>();
+    for (const contribution of this.contributions.values()) {
+      for (const [meshId, matrices] of contribution.entries()) {
+        const bucket = grouped.get(meshId);
+        if (bucket) {
+          bucket.push(matrices);
+        } else {
+          grouped.set(meshId, [matrices]);
+        }
       }
     }
 
@@ -62,15 +82,13 @@ export class PlacementMeshLayer {
         continue;
       }
 
-      const matrices = new Float32Array(entries.length * 16);
-      entries.forEach((item, index) => {
-        const matrix = Matrix.Compose(
-          new Vector3(item.scale, item.scale, item.scale),
-          Quaternion.FromEulerAngles(0, item.rotationY, 0),
-          new Vector3(item.worldX, item.worldY, item.worldZ),
-        );
-        matrix.copyToArray(matrices, index * 16);
-      });
+      const totalLength = entries.reduce((sum, item) => sum + item.length, 0);
+      const matrices = new Float32Array(totalLength);
+      let offset = 0;
+      for (const entry of entries) {
+        matrices.set(entry, offset);
+        offset += entry.length;
+      }
 
       source.thinInstanceSetBuffer("matrix", matrices, 16, true);
     }
@@ -89,6 +107,78 @@ export class PlacementMeshLayer {
     this.sources.set(meshId, source);
     return source;
   }
+}
+
+function buildPlacementContributionFromPacked(items: Float32Array): Map<string, Float32Array> {
+  const stride = 6;
+  const grouped = new Map<string, number[]>();
+
+  for (let index = 0; index < items.length; index += stride) {
+    const placementType = Math.round(items[index]);
+    const tier = Math.round(items[index + 1]);
+    const spec = resolvePlacementRenderSpec(placementType, tier);
+    const matrix = Matrix.Compose(
+      new Vector3(spec.scale, spec.scale, spec.scale),
+      Quaternion.FromEulerAngles(0, items[index + 5], 0),
+      new Vector3(items[index + 2], items[index + 3], items[index + 4]),
+    );
+    const bucket = grouped.get(spec.meshId) ?? [];
+    matrix.copyToArray(bucket, bucket.length);
+    grouped.set(spec.meshId, bucket);
+  }
+
+  return new Map(
+    [...grouped.entries()].map(([meshId, values]) => [meshId, new Float32Array(values)]),
+  );
+}
+
+function buildPlacementContributionFromItems(items: readonly PlacementItem[]): Map<string, Float32Array> {
+  const grouped = new Map<string, number[]>();
+
+  items.forEach((item) => {
+    const matrix = Matrix.Compose(
+      new Vector3(item.scale, item.scale, item.scale),
+      Quaternion.FromEulerAngles(0, item.rotationY, 0),
+      new Vector3(item.worldX, item.worldY, item.worldZ),
+    );
+    const bucket = grouped.get(item.meshId) ?? [];
+    matrix.copyToArray(bucket, bucket.length);
+    grouped.set(item.meshId, bucket);
+  });
+
+  return new Map(
+    [...grouped.entries()].map(([meshId, values]) => [meshId, new Float32Array(values)]),
+  );
+}
+
+function mergePlacementContributions(
+  existing: ReadonlyMap<string, Float32Array>,
+  next: ReadonlyMap<string, Float32Array>,
+): Map<string, Float32Array> {
+  const merged = new Map<string, Float32Array>();
+  const keys = new Set([...existing.keys(), ...next.keys()]);
+
+  for (const key of keys) {
+    const left = existing.get(key);
+    const right = next.get(key);
+
+    if (!left) {
+      merged.set(key, right!.slice());
+      continue;
+    }
+
+    if (!right) {
+      merged.set(key, left.slice());
+      continue;
+    }
+
+    const combined = new Float32Array(left.length + right.length);
+    combined.set(left, 0);
+    combined.set(right, left.length);
+    merged.set(key, combined);
+  }
+
+  return merged;
 }
 
 function createPlacementSource(scene: Scene, material: StandardMaterial, meshId: string): Mesh {
