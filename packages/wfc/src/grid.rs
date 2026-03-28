@@ -164,9 +164,11 @@ fn shared_rules(allowed_types: Option<&[u16]>) -> Arc<AdjacencyRules> {
     let key = canonical_allowed_types(allowed_types);
     let cache = RULES_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
 
-    let mut rules = cache.lock().expect("rules cache lock poisoned");
-    if let Some(existing) = rules.get(&key) {
-        return existing.clone();
+    {
+        let rules = cache.lock().expect("rules cache lock poisoned");
+        if let Some(existing) = rules.get(&key) {
+            return existing.clone();
+        }
     }
 
     let build_key = key.clone();
@@ -174,6 +176,11 @@ fn shared_rules(allowed_types: Option<&[u16]>) -> Arc<AdjacencyRules> {
         shared_tile_defs(),
         build_key.as_deref(),
     ));
+
+    let mut rules = cache.lock().expect("rules cache lock poisoned");
+    if let Some(existing) = rules.get(&key) {
+        return existing.clone();
+    }
     rules.insert(key, created.clone());
     created
 }
@@ -339,6 +346,20 @@ mod tests {
         let grass_ne_0 = rules.get_by_edge(crate::tile::EdgeType::Grass, HexDir::NE, 0);
         assert!(grass_ne_0.is_some());
         assert!(grass_ne_0.unwrap().len() > 10);
+    }
+
+    #[test]
+    fn shared_rules_reuses_cached_arc() {
+        let a = shared_rules(None);
+        let b = shared_rules(None);
+        assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn canonical_allowed_types_share_cache_entry() {
+        let a = shared_rules(Some(&[0, 1]));
+        let b = shared_rules(Some(&[1, 0, 1]));
+        assert!(Arc::ptr_eq(&a, &b));
     }
 
     #[test]
