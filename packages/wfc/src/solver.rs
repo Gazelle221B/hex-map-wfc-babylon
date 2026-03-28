@@ -246,17 +246,12 @@ impl Solver {
         propagation_stack: &mut Vec<String>,
         record_trail: bool,
     ) -> bool {
-        let neighbor_count = match grid.neighbors(key) {
-            Some(neighbors) => neighbors.len(),
+        let neighbor_keys = match grid.neighbors(key) {
+            Some(neighbors) => neighbors.iter().map(|neighbor| neighbor.key.clone()).collect::<Vec<_>>(),
             None => return true,
         };
 
-        for index in 0..neighbor_count {
-            let neighbor_key = {
-                let neighbor = &grid.neighbors(key).unwrap()[index];
-                neighbor.key.clone()
-            };
-
+        for neighbor_key in neighbor_keys {
             let to_remove = match grid.cells.get(&neighbor_key) {
                 Some(neighbor) if !neighbor.collapsed => neighbor
                     .possibilities
@@ -301,17 +296,15 @@ impl Solver {
     ) -> bool {
         while let Some(current_key) = propagation_stack.pop() {
             let fixed_state = grid.fixed_state(&current_key);
-            let neighbor_count = match grid.neighbors(&current_key) {
-                Some(neighbors) => neighbors.len(),
+            let neighbors = match grid.neighbors(&current_key) {
+                Some(neighbors) => neighbors
+                    .iter()
+                    .map(|neighbor| (neighbor.key.clone(), neighbor.dir, neighbor.return_dir))
+                    .collect::<Vec<_>>(),
                 None => continue,
             };
 
-            for index in 0..neighbor_count {
-                let (neighbor_key, dir, return_dir) = {
-                    let neighbor = &grid.neighbors(&current_key).unwrap()[index];
-                    (neighbor.key.clone(), neighbor.dir, neighbor.return_dir)
-                };
-
+            for (neighbor_key, dir, return_dir) in neighbors {
                 let mut valid_neighbor_states = HashSet::new();
                 let mut looked_up = HashSet::new();
 
