@@ -14,6 +14,9 @@ use crate::placement::{
 use crate::solver::CollapsedTile;
 use crate::tile::{EdgeType, build_tile_list};
 
+const PACKED_GRID_STRIDE: usize = 5;
+const PACKED_PLACEMENT_STRIDE: usize = 6;
+
 /// JS-friendly solve options.
 #[derive(Deserialize)]
 pub struct SolveOptions {
@@ -364,7 +367,7 @@ fn set_field(target: &Object, key: &str, value: &JsValue) -> Result<(), JsValue>
 }
 
 fn pack_tiles(tiles: &[CollapsedTile]) -> Vec<i32> {
-    let mut packed = Vec::with_capacity(tiles.len() * 5);
+    let mut packed = Vec::with_capacity(tiles.len() * PACKED_GRID_STRIDE);
     for tile in tiles {
         packed.push(tile.q);
         packed.push(tile.r);
@@ -376,7 +379,7 @@ fn pack_tiles(tiles: &[CollapsedTile]) -> Vec<i32> {
 }
 
 fn pack_placements(placements: &[PlacementItem]) -> Vec<f32> {
-    let mut packed = Vec::with_capacity(placements.len() * 6);
+    let mut packed = Vec::with_capacity(placements.len() * PACKED_PLACEMENT_STRIDE);
     for item in placements {
         packed.push(item.placement_type as u8 as f32);
         packed.push(item.tier as f32);
@@ -397,7 +400,7 @@ mod tests {
     fn packed_tiles_have_expected_stride() {
         let result = solve_grid(CubeCoord::new(0, 0), &GlobalCellMap::new(), 42, None);
         let packed = pack_tiles(&result.tiles);
-        assert_eq!(packed.len(), result.tiles.len() * 5);
+        assert_eq!(packed.len(), result.tiles.len() * PACKED_GRID_STRIDE);
     }
 
     #[test]
@@ -428,10 +431,10 @@ mod tests {
         ];
 
         let packed = pack_placements(&placements);
-        assert_eq!(packed.len(), placements.len() * 6);
+        assert_eq!(packed.len(), placements.len() * PACKED_PLACEMENT_STRIDE);
         assert_eq!(packed[0], 0.0);
         assert_eq!(packed[1], 2.0);
-        assert_eq!(packed[6], 3.0);
+        assert_eq!(packed[PACKED_PLACEMENT_STRIDE], 3.0);
     }
 
     #[test]
@@ -439,7 +442,7 @@ mod tests {
         let result = solve_grid(CubeCoord::new(0, 0), &GlobalCellMap::new(), 42, Some(&[]));
         assert_eq!(result.status, GridSolveStatus::FallbackWater);
         let packed = pack_tiles(&result.tiles);
-        assert_eq!(packed.len(), result.tiles.len() * 5);
+        assert_eq!(packed.len(), result.tiles.len() * PACKED_GRID_STRIDE);
         assert_eq!(packed[2], 1);
         assert_eq!(packed[3], 0);
         assert_eq!(packed[4], 0);

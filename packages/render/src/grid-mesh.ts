@@ -2,6 +2,7 @@ import { Matrix, Quaternion, Vector3 } from "@babylonjs/core";
 import {
   HEX_WIDTH,
   LEVEL_HEIGHT,
+  PACKED_GRID_STRIDE,
   TILE_LIST,
   type GridResult,
   type PackedGridChunk,
@@ -15,10 +16,9 @@ export class GridMeshLayer {
   constructor(private readonly tilePool: TilePool) {}
 
   addGrid(result: GridResult): void {
-    const stride = 5;
-    const cells = new Int32Array(result.cells.length * stride);
+    const cells = new Int32Array(result.cells.length * PACKED_GRID_STRIDE);
     result.cells.forEach((cell, index) => {
-      const offset = index * stride;
+      const offset = index * PACKED_GRID_STRIDE;
       cells[offset] = cell.q;
       cells[offset + 1] = cell.r;
       cells[offset + 2] = cell.tileId;
@@ -91,7 +91,6 @@ export class GridMeshLayer {
 }
 
 function buildGridContribution(cells: Int32Array): Map<string, Float32Array> {
-  const stride = 5;
   const groups = new Map<string, number[]>();
   const size = HEX_WIDTH / 2;
   const sqrt3 = Math.sqrt(3);
@@ -101,7 +100,7 @@ function buildGridContribution(cells: Int32Array): Map<string, Float32Array> {
   const rotationStep = Math.PI / 3;
   const unitScale = new Vector3(1, 1, 1);
 
-  for (let index = 0; index < cells.length; index += stride) {
+  for (let index = 0; index < cells.length; index += PACKED_GRID_STRIDE) {
     const q = cells[index];
     const r = cells[index + 1];
     const tileId = cells[index + 2];

@@ -24,6 +24,8 @@ export interface GridResult {
 
 export type PackedGridStatus = "solved" | "fallback_water";
 
+export const PACKED_GRID_STRIDE = 5;
+
 /**
  * Packed cell payload emitted from the worker.
  * Stride: [q, r, tileId, rotation, level]

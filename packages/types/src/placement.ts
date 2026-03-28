@@ -33,6 +33,8 @@ export interface PlacementRenderSpec {
   readonly scale: number;
 }
 
+export const PACKED_PLACEMENT_STRIDE = 6;
+
 /**
  * Packed placement payload emitted from the worker.
  * Stride: [placementType, tier, worldX, worldY, worldZ, rotation]

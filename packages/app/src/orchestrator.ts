@@ -63,7 +63,7 @@ export async function boot(
       },
       onError: (error) => {
         if (error.recoverable) {
-          console.warn("Recoverable WFC grid fallback:", error.message);
+          console.warn("Recoverable WFC issue:", error.message);
         }
       },
       onAllSolved: (summary) => {
@@ -71,7 +71,6 @@ export async function boot(
       },
     });
 
-    await wfc.ready();
     zoomElement.textContent = `Camera radius: ${((config.cameraMinDistance + config.cameraMaxDistance) / 2).toFixed(1)}`;
 
     renderer.clear();

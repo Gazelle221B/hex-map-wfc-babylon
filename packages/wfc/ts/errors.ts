@@ -15,10 +15,10 @@ function defaultUserMessage(
   }
 
   if (phase === "init") {
-    return "Failed to initialize the WFC worker. Reload the page and try again.";
+    return "Failed to initialize the WFC worker. Try again, then reload if it keeps failing.";
   }
 
-  return "The WFC worker stopped unexpectedly while generating the map. Reload the page and try again.";
+  return "The WFC worker stopped unexpectedly while generating the map. Try again, then reload if it keeps failing.";
 }
 
 export class WfcBridgeError extends Error {
