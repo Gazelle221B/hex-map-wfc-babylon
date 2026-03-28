@@ -14,7 +14,7 @@ import {
   PACKED_PLACEMENT_STRIDE,
   resolvePlacementRenderSpec,
 } from "@hex/types";
-import { WfcBridgeError } from "./errors.js";
+import { WfcBridgeError, WfcSeedError } from "./errors.js";
 import {
   WFC_PROTOCOL_VERSION,
   type PackedSolveResult,
@@ -158,7 +158,6 @@ export class WfcBridge {
             gridIndex: RESTART_PROGRESS_GRID_INDEX,
             fallbackCount: 0,
           });
-          await this.recreateWorker();
         }
       }
 
@@ -192,7 +191,7 @@ export class WfcBridge {
     const normalizedSeed = normalizeSeed(baseSeed);
     const nextSeed = normalizedSeed + gridIndex;
     if (!Number.isSafeInteger(nextSeed)) {
-      throw new RangeError(
+      throw new WfcSeedError(
         `Seed ${normalizedSeed} is too large to derive a worker-safe grid seed.`,
       );
     }
@@ -331,17 +330,6 @@ export class WfcBridge {
       this.failCurrentWorker(bridgeError);
       throw bridgeError;
     }
-  }
-
-  private async recreateWorker(): Promise<void> {
-    this.assertNotDisposed();
-    if (this.worker) {
-      this.failCurrentWorker(
-        new WfcBridgeError("fatal", "Restarting the WFC worker.", { phase: "runtime" }),
-      );
-    }
-    this.spawnWorker();
-    await this.readyPromise;
   }
 
   private startInitWatchdog(worker: Worker): void {
@@ -692,7 +680,7 @@ function unpackPlacementItems(items: Float32Array): PlacementItem[] {
 
 function normalizeSeed(seed: number): number {
   if (!Number.isFinite(seed) || !Number.isInteger(seed) || seed < 0 || !Number.isSafeInteger(seed)) {
-    throw new RangeError(
+    throw new WfcSeedError(
       `Seed must be a finite, non-negative safe integer. Received: ${seed}.`,
     );
   }

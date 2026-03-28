@@ -1,5 +1,6 @@
 export { WfcBridge } from "./bridge.js";
 export { WfcBridgeError } from "./errors.js";
+export { WfcSeedError } from "./errors.js";
 export {
   ALL_GRID_POSITIONS,
   gridIndexToPosition,

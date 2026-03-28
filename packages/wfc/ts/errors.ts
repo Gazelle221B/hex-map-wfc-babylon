@@ -2,6 +2,9 @@ import type { WorkerFatalPhase } from "./types.js";
 
 export type WfcBridgeErrorKind = "busy" | "disposed" | "fatal";
 
+const DEFAULT_SEED_USER_MESSAGE =
+  "Seed must be a whole, non-negative number within the supported range.";
+
 function defaultUserMessage(
   kind: WfcBridgeErrorKind,
   phase?: WorkerFatalPhase,
@@ -39,6 +42,22 @@ export class WfcBridgeError extends Error {
     this.kind = kind;
     this.phase = options.phase;
     this.userMessage = options.userMessage ?? defaultUserMessage(kind, options.phase);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class WfcSeedError extends RangeError {
+  readonly userMessage: string;
+
+  constructor(
+    message: string,
+    options: {
+      userMessage?: string;
+    } = {},
+  ) {
+    super(message);
+    this.name = "WfcSeedError";
+    this.userMessage = options.userMessage ?? DEFAULT_SEED_USER_MESSAGE;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
