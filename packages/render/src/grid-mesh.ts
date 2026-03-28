@@ -11,7 +11,11 @@ import type { TilePool } from "./tile-pool.js";
 
 export class GridMeshLayer {
   private readonly contributions = new Map<number, Map<string, Float32Array>>();
+  private readonly meshContributions = new Map<string, Map<number, Float32Array>>();
+  private readonly dirtyMeshIds = new Set<string>();
   private readonly activeMeshIds = new Set<string>();
+  private syncScheduled = false;
+  private disposed = false;
 
   constructor(private readonly tilePool: TilePool) {}
 
@@ -33,58 +37,108 @@ export class GridMeshLayer {
   }
 
   addPackedGrid(chunk: PackedGridChunk): void {
-    this.contributions.set(chunk.gridIndex, buildGridContribution(chunk.cells));
-    this.sync();
+    if (this.disposed) {
+      return;
+    }
+    this.replaceContribution(chunk.gridIndex, buildGridContribution(chunk.cells));
+    this.scheduleSync();
   }
 
   clear(): void {
+    if (this.disposed) {
+      return;
+    }
+    for (const meshId of this.activeMeshIds) {
+      this.dirtyMeshIds.add(meshId);
+    }
     this.contributions.clear();
-    this.sync();
+    this.meshContributions.clear();
+    this.flushSync();
   }
 
   dispose(): void {
-    this.clear();
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    this.syncScheduled = false;
+    this.contributions.clear();
+    this.meshContributions.clear();
+    this.dirtyMeshIds.clear();
+    this.activeMeshIds.clear();
   }
 
-  private sync(): void {
-    const nextActiveMeshIds = new Set<string>();
-    const grouped = new Map<string, Float32Array[]>();
+  private replaceContribution(gridIndex: number, nextContribution: Map<string, Float32Array>): void {
+    const previousContribution = this.contributions.get(gridIndex);
+    this.contributions.set(gridIndex, nextContribution);
 
-    for (const contribution of this.contributions.values()) {
-      for (const [meshId, matrices] of contribution.entries()) {
-        nextActiveMeshIds.add(meshId);
-        const bucket = grouped.get(meshId);
-        if (bucket) {
-          bucket.push(matrices);
-        } else {
-          grouped.set(meshId, [matrices]);
-        }
-      }
+    const affectedMeshIds = new Set<string>();
+    for (const meshId of previousContribution?.keys() ?? []) {
+      affectedMeshIds.add(meshId);
+    }
+    for (const meshId of nextContribution.keys()) {
+      affectedMeshIds.add(meshId);
     }
 
-    const knownMeshIds = new Set([...this.activeMeshIds, ...nextActiveMeshIds]);
-    for (const meshId of knownMeshIds) {
-      const source = this.tilePool.getTemplate(meshId);
-      const parts = grouped.get(meshId) ?? [];
+    for (const meshId of affectedMeshIds) {
+      const partsByGrid = this.meshContributions.get(meshId) ?? new Map<number, Float32Array>();
+      const nextMatrices = nextContribution.get(meshId);
 
-      if (parts.length === 0) {
+      if (nextMatrices) {
+        partsByGrid.set(gridIndex, nextMatrices);
+        this.meshContributions.set(meshId, partsByGrid);
+      } else {
+        partsByGrid.delete(gridIndex);
+        if (partsByGrid.size === 0) {
+          this.meshContributions.delete(meshId);
+        } else {
+          this.meshContributions.set(meshId, partsByGrid);
+        }
+      }
+
+      this.dirtyMeshIds.add(meshId);
+    }
+  }
+
+  private scheduleSync(): void {
+    if (this.syncScheduled || this.disposed) {
+      return;
+    }
+    this.syncScheduled = true;
+    queueMicrotask(() => {
+      this.syncScheduled = false;
+      this.flushSync();
+    });
+  }
+
+  private flushSync(): void {
+    if (this.disposed) {
+      return;
+    }
+
+    const dirtyMeshIds = [...this.dirtyMeshIds];
+    this.dirtyMeshIds.clear();
+
+    for (const meshId of dirtyMeshIds) {
+      const source = this.tilePool.getTemplate(meshId);
+      const parts = this.meshContributions.get(meshId);
+
+      if (!parts || parts.size === 0) {
         source.thinInstanceSetBuffer("matrix", new Float32Array(0), 16, true);
+        this.activeMeshIds.delete(meshId);
         continue;
       }
 
-      const totalLength = parts.reduce((sum, item) => sum + item.length, 0);
+      const matricesByGrid = [...parts.values()];
+      const totalLength = matricesByGrid.reduce((sum, item) => sum + item.length, 0);
       const matrices = new Float32Array(totalLength);
       let offset = 0;
-      for (const part of parts) {
+      for (const part of matricesByGrid) {
         matrices.set(part, offset);
         offset += part.length;
       }
 
       source.thinInstanceSetBuffer("matrix", matrices, 16, true);
-    }
-
-    this.activeMeshIds.clear();
-    for (const meshId of nextActiveMeshIds) {
       this.activeMeshIds.add(meshId);
     }
   }

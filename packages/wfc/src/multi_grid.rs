@@ -386,15 +386,14 @@ fn attempt_solve(
     seed: u64,
     allowed_types: Option<&[u16]>,
 ) -> SolveResult {
-    let mut grid = WfcGrid::new(coords, crate::tile::build_tile_list(), allowed_types);
-
-    // Apply fixed cells (skip dropped ones)
     let dropped_set: HashSet<String> = dropped.iter().map(|c| c.key()).collect();
-    for (coord, state) in fixed_cells {
-        if !dropped_set.contains(&coord.key()) {
-            grid.fix_cell(coord, *state);
-        }
-    }
+    let active_fixed_cells = fixed_cells
+        .iter()
+        .filter(|(coord, _)| !dropped_set.contains(&coord.key()))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut grid = WfcGrid::new(coords, &active_fixed_cells, allowed_types);
 
     let mut solver = Solver::new(seed, MAX_BACKTRACKS);
     solver.solve(&mut grid)

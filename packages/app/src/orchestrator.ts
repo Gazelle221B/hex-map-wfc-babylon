@@ -1,5 +1,5 @@
 import { createRenderer, type HexRenderer } from "@hex/render";
-import { DEFAULT_CONFIG, type MapConfig } from "@hex/types";
+import { DEFAULT_CONFIG, HEX_WIDTH, type MapConfig } from "@hex/types";
 import { WfcBridge } from "@hex/wfc";
 
 export interface BootHandle {
@@ -36,6 +36,7 @@ export async function boot(
   try {
     statusElement.textContent = "WebGPU check…";
     renderer = await createRenderer(canvas, config);
+    focusCameraForCenterBoot(renderer, config);
 
     statusElement.textContent = "WFC worker init…";
     wfc = new WfcBridge(config.seed);
@@ -71,10 +72,22 @@ export async function boot(
       },
     });
 
-    zoomElement.textContent = `Camera radius: ${((config.cameraMinDistance + config.cameraMaxDistance) / 2).toFixed(1)}`;
+    const camera = renderer.getCamera();
+    zoomElement.textContent = `Camera radius: ${
+      isArcRotateCamera(camera)
+        ? camera.radius.toFixed(1)
+        : ((config.cameraMinDistance + config.cameraMaxDistance) / 2).toFixed(1)
+    }`;
 
     renderer.clear();
-    await wfc.buildAllProgressively(config.seed);
+    statusElement.textContent = "Solving center grid…";
+    const centerGrid = await wfc.solveGrid(0, 0);
+    renderer.addGrid(centerGrid);
+
+    statusElement.textContent = "Generating placements…";
+    const placements = await wfc.generatePlacements([centerGrid], config.seed);
+    renderer.addPlacements(placements);
+    statusElement.textContent = "Ready";
 
     return {
       dispose() {
@@ -85,4 +98,25 @@ export async function boot(
     cleanup();
     throw error;
   }
+}
+
+function focusCameraForCenterBoot(renderer: HexRenderer, config: MapConfig): void {
+  const camera = renderer.getCamera();
+  if (!isArcRotateCamera(camera)) {
+    return;
+  }
+
+  const size = HEX_WIDTH / 2;
+  const gridWorldRadius = Math.sqrt(3) * (config.gridRadius + 1) * size;
+  const fov = (config.cameraFov * Math.PI) / 180;
+  const fitRadius = (gridWorldRadius / Math.sin(fov / 2)) * 1.25;
+  camera.radius = Math.min(config.cameraMaxDistance, Math.max(config.cameraMinDistance, fitRadius));
+}
+
+function isArcRotateCamera(camera: ReturnType<HexRenderer["getCamera"]>): camera is ReturnType<
+  HexRenderer["getCamera"]
+> & {
+  radius: number;
+} {
+  return "radius" in camera && typeof camera.radius === "number";
 }
