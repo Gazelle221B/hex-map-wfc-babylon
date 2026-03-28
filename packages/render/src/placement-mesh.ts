@@ -287,6 +287,9 @@ function configureThinInstanceSource(mesh: Mesh): void {
   mesh.isPickable = false;
   mesh.alwaysSelectAsActiveMesh = true;
 
+  // Babylon 8.56.2 still renders the source mesh by default, while `isVisible = false`
+  // also suppresses thin instances and `thinInstanceAddSelf()` only adds an identity instance.
+  // Keep this internal flag until Babylon exposes a supported instances-only toggle.
   const internalData = (mesh as Mesh & {
     _internalAbstractMeshDataInfo?: {
       _onlyForInstances?: boolean;
