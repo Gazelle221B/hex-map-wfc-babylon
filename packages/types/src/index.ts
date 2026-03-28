@@ -4,13 +4,17 @@ export type {
   PackedGridChunk,
   PackedGridStatus,
 } from "./cell.js";
+export { PACKED_GRID_STRIDE } from "./cell.js";
 export type {
   PlacementType,
   PlacementItem,
   PlacementRenderSpec,
   PackedPlacementChunk,
 } from "./placement.js";
-export { resolvePlacementRenderSpec } from "./placement.js";
+export {
+  PACKED_PLACEMENT_STRIDE,
+  resolvePlacementRenderSpec,
+} from "./placement.js";
 export type {
   EdgeType,
   HexDirection,

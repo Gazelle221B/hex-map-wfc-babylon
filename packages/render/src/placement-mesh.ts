@@ -7,6 +7,7 @@ import {
   type Scene,
 } from "@babylonjs/core";
 import {
+  PACKED_PLACEMENT_STRIDE,
   resolvePlacementRenderSpec,
   type PackedPlacementChunk,
   type PlacementItem,
@@ -110,10 +111,9 @@ export class PlacementMeshLayer {
 }
 
 function buildPlacementContributionFromPacked(items: Float32Array): Map<string, Float32Array> {
-  const stride = 6;
   const grouped = new Map<string, number[]>();
 
-  for (let index = 0; index < items.length; index += stride) {
+  for (let index = 0; index < items.length; index += PACKED_PLACEMENT_STRIDE) {
     const placementType = Math.round(items[index]);
     const tier = Math.round(items[index + 1]);
     const spec = resolvePlacementRenderSpec(placementType, tier);

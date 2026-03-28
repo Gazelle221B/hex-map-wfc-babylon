@@ -10,14 +10,17 @@ import type {
 import {
   HEX_WIDTH,
   LEVEL_HEIGHT,
+  PACKED_GRID_STRIDE,
+  PACKED_PLACEMENT_STRIDE,
   resolvePlacementRenderSpec,
 } from "@hex/types";
-import { WfcBridgeError } from "./errors.js";
-import type {
-  PackedSolveResult,
-  WorkerFatalPhase,
-  WorkerRequest,
-  WorkerResponse,
+import { WfcBridgeError, WfcSeedError } from "./errors.js";
+import {
+  WFC_PROTOCOL_VERSION,
+  type PackedSolveResult,
+  type WorkerFatalPhase,
+  type WorkerRequest,
+  type WorkerResponse,
 } from "./types.js";
 import { ALL_GRID_POSITIONS, gridIndexToPosition, gridPositionToIndex } from "./grid-positions.js";
 
@@ -33,45 +36,36 @@ type WfcOperationName =
   | "buildAllProgressively"
   | "reset";
 
+const INIT_TIMEOUT_MS = 30_000;
+const BUILD_RETRY_LIMIT = 1;
+const RESTART_PROGRESS_GRID_INDEX = 0;
+
 /**
  * Bridge between the main thread and the WFC WASM worker.
  * Provides a Promise-based API for grid solving and placement generation.
  */
 export class WfcBridge {
-  private worker: Worker | null;
+  private worker: Worker | null = null;
   private pending = new Map<string, PendingResolve<unknown>>();
   private subscriptions = new Set<Partial<WfcEvents>>();
-  private readyPromise: Promise<void>;
+  private readyPromise!: Promise<void>;
   private resolveReady!: () => void;
   private rejectReady!: (reason: Error) => void;
   private readySettled = false;
   private disposed = false;
-  private terminalError: Error | null = null;
   private nextId = 0;
   private activeOperation: WfcOperationName | null = null;
   private currentSeed: number;
+  private initWatchdog: ReturnType<typeof setTimeout> | null = null;
 
   constructor(seed: number) {
-    this.currentSeed = seed;
-    this.worker = new Worker(
-      new URL("./worker.ts", import.meta.url),
-      { type: "module" },
-    );
-
-    this.readyPromise = new Promise<void>((resolve, reject) => {
-      this.resolveReady = resolve;
-      this.rejectReady = reject;
-    });
-
-    this.worker.addEventListener("message", this.onMessage);
-    this.worker.addEventListener("error", this.onWorkerError);
-    this.worker.addEventListener("messageerror", this.onWorkerMessageError);
-    this.post({ type: "init" }, "init");
+    this.currentSeed = normalizeSeed(seed);
+    this.spawnWorker();
   }
 
-  /** Wait for the WASM module to initialize. */
+  /** Wait for the current worker generation to initialize. */
   async ready(): Promise<void> {
-    return this.readyPromise;
+    await this.ensureWorkerReady();
   }
 
   /** Solve a single grid at the given hex-of-hex position. */
@@ -95,10 +89,11 @@ export class WfcBridge {
   /** Solve all 19 grids. */
   async solveAll(seed: number): Promise<GridResult[]> {
     return this.runExclusive("solveAll", async () => {
-      this.currentSeed = seed;
+      this.currentSeed = normalizeSeed(seed);
       this.postResetUnsafe();
       const results: GridResult[] = [];
       for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
+        this.assertNotDisposed();
         const raw = await this.solveGridRaw(pos.q, pos.r, this.seedForGrid(gridIndex, seed));
         results.push(normalizeGridResult(raw, gridIndex));
       }
@@ -112,9 +107,10 @@ export class WfcBridge {
     seed: number,
   ): Promise<PlacementItem[]> {
     return this.runExclusive("generatePlacements", async () => {
-      this.currentSeed = seed;
+      this.currentSeed = normalizeSeed(seed);
       const placements = await Promise.all(
         grids.map(async (grid) => {
+          this.assertNotDisposed();
           const pos = gridIndexToPosition(grid.gridIndex);
           const raw = await this.generatePlacementsPackedRaw(
             pos.q,
@@ -139,87 +135,82 @@ export class WfcBridge {
 
   async buildAllProgressively(seed: number): Promise<BuildSummary> {
     return this.runExclusive("buildAllProgressively", async () => {
-      this.currentSeed = seed;
-      const total = ALL_GRID_POSITIONS.length;
-      let solvedCount = 0;
-      let fallbackCount = 0;
+      this.currentSeed = normalizeSeed(seed);
 
-      this.postResetUnsafe();
+      for (let attempt = 0; attempt <= BUILD_RETRY_LIMIT; attempt += 1) {
+        this.assertNotDisposed();
 
-      for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
-        const raw = await this.solveGridRaw(
-          pos.q,
-          pos.r,
-          this.seedForGrid(gridIndex, seed),
-        );
-        const chunk: PackedGridChunk = {
-          gridIndex,
-          status: raw.status,
-          cells: raw.cells,
-        };
+        try {
+          return await this.buildAllProgressivelyOnce(seed);
+        } catch (error) {
+          if (!this.shouldRetryProgressiveBuild(error, attempt)) {
+            throw error;
+          }
 
-        if (raw.status === "fallback_water") {
-          fallbackCount += 1;
           this.emitError({
-            message:
-              `Grid ${gridIndex} fell back to water ` +
-              `[tries=${raw.tries}, backtracks=${raw.backtracks}, dropped_count=${raw.dropped_count}, local_wfc_attempts=${raw.local_wfc_attempts}]`,
-            gridIndex,
+            message: `Restarting progressive build after worker failure: ${error.message}`,
             recoverable: true,
           });
-        } else {
-          solvedCount += 1;
+          this.emitProgress({
+            phase: "solving",
+            completed: 0,
+            total: ALL_GRID_POSITIONS.length,
+            gridIndex: RESTART_PROGRESS_GRID_INDEX,
+            fallbackCount: 0,
+          });
         }
-
-        this.emitGridSolved(chunk);
-        this.emitProgress({
-          phase: "solving",
-          completed: gridIndex + 1,
-          total,
-          gridIndex,
-          fallbackCount,
-        });
       }
 
-      for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
-        const items = await this.generatePlacementsPackedRaw(
-          pos.q,
-          pos.r,
-          this.seedForGrid(gridIndex, seed),
-          0,
-          0,
-        );
-        this.emitPlacementsGenerated({ gridIndex, items });
-        this.emitProgress({
-          phase: "placements",
-          completed: gridIndex + 1,
-          total,
-          gridIndex,
-          fallbackCount,
-        });
-      }
-
-      const summary: BuildSummary = {
-        totalGrids: total,
-        solvedCount,
-        fallbackCount,
-      };
-      this.emitAllSolved(summary);
-      return summary;
+      throw new Error("unreachable progressive build retry state");
     });
   }
 
+  /** Reset the engine state. */
+  reset(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.assertIdle("reset");
+    if (!this.worker) {
+      this.spawnWorker();
+    }
+    this.postResetUnsafe();
+  }
+
+  /** Terminate the worker. */
+  dispose(): void {
+    if (this.disposed) {
+      return;
+    }
+
+    this.disposed = true;
+    this.failCurrentWorker(this.createDisposedError());
+  }
+
   private seedForGrid(gridIndex: number, baseSeed = this.currentSeed): number {
-    return baseSeed + gridIndex;
+    const normalizedSeed = normalizeSeed(baseSeed);
+    const nextSeed = normalizedSeed + gridIndex;
+    if (!Number.isSafeInteger(nextSeed)) {
+      throw new WfcSeedError(
+        `Seed ${normalizedSeed} is too large to derive a worker-safe grid seed.`,
+      );
+    }
+    return nextSeed;
   }
 
   private assertIdle(operationName: WfcOperationName): void {
-    this.assertActiveWorker();
+    this.assertNotDisposed();
     if (this.activeOperation) {
       throw new WfcBridgeError(
         "busy",
         `Cannot start ${operationName} while ${this.activeOperation} is in progress.`,
       );
+    }
+  }
+
+  private assertNotDisposed(): void {
+    if (this.disposed) {
+      throw this.createDisposedError();
     }
   }
 
@@ -244,14 +235,17 @@ export class WfcBridge {
     tileTypes?: number[],
   ): Promise<PackedSolveResult> {
     const id = this.genId();
-    return this.request<PackedSolveResult>({
-      type: "solve",
+    return this.request<PackedSolveResult>(
+      {
+        type: "solve",
+        id,
+        gridQ,
+        gridR,
+        seed,
+        tileTypes,
+      },
       id,
-      gridQ,
-      gridR,
-      seed,
-      tileTypes,
-    }, id);
+    );
   }
 
   private async generatePlacementsPackedRaw(
@@ -262,65 +256,23 @@ export class WfcBridge {
     offsetZ: number,
   ): Promise<Float32Array> {
     const id = this.genId();
-    return this.request<Float32Array>({
-      type: "placements",
+    return this.request<Float32Array>(
+      {
+        type: "placements",
+        id,
+        gridQ,
+        gridR,
+        seed,
+        offsetX,
+        offsetZ,
+      },
       id,
-      gridQ,
-      gridR,
-      seed,
-      offsetX,
-      offsetZ,
-    }, id);
-  }
-
-  /** Reset the engine state. */
-  reset(): void {
-    if (this.disposed || this.terminalError) {
-      return;
-    }
-    this.assertIdle("reset");
-    this.postResetUnsafe();
-  }
-
-  /** Terminate the worker. */
-  dispose(): void {
-    if (this.disposed) {
-      return;
-    }
-
-    this.disposed = true;
-    if (!this.terminalError) {
-      this.terminalError = new WfcBridgeError("disposed", "The WFC worker was disposed.");
-    }
-
-    this.rejectReadyOnce(this.terminalError);
-    this.rejectPending(this.terminalError);
-    this.detachWorker(true);
-  }
-
-  private post(msg: WorkerRequest, phase: WorkerFatalPhase): void {
-    if (!this.worker) {
-      if (!this.terminalError) {
-        this.handleFatal(phase, "The WFC worker is no longer available.");
-      }
-      return;
-    }
-
-    try {
-      this.worker.postMessage(msg);
-    } catch (error) {
-      const details = error instanceof Error ? error.message : String(error);
-      this.handleFatal(phase, `Failed to post a message to the WFC worker: ${details}`);
-    }
-  }
-
-  private postResetUnsafe(): void {
-    this.post({ type: "reset" }, "runtime");
+    );
   }
 
   private async request<T>(msg: WorkerRequest, id: string): Promise<T> {
-    await this.ready();
-    const worker = this.assertActiveWorker();
+    await this.ensureWorkerReady();
+    const worker = this.requireWorker("runtime");
 
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
@@ -329,16 +281,13 @@ export class WfcBridge {
       } catch (error) {
         this.pending.delete(id);
         const details = error instanceof Error ? error.message : String(error);
-        const terminalError = new WfcBridgeError(
+        const bridgeError = new WfcBridgeError(
           "fatal",
           `Failed to post a message to the WFC worker: ${details}`,
           { phase: "runtime" },
         );
-        this.terminalError = terminalError;
-        this.rejectReadyOnce(terminalError);
-        this.rejectPending(terminalError);
-        this.detachWorker(true);
-        reject(terminalError);
+        this.failCurrentWorker(bridgeError);
+        reject(bridgeError);
       }
     });
   }
@@ -347,11 +296,204 @@ export class WfcBridge {
     return String(++this.nextId);
   }
 
+  private resetReadyPromise(): void {
+    this.readySettled = false;
+    this.readyPromise = new Promise<void>((resolve, reject) => {
+      this.resolveReady = resolve;
+      this.rejectReady = reject;
+    });
+  }
+
+  private spawnWorker(): void {
+    this.assertNotDisposed();
+    if (this.worker) {
+      return;
+    }
+
+    this.resetReadyPromise();
+    const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+    this.worker = worker;
+    worker.addEventListener("message", this.onMessage);
+    worker.addEventListener("error", this.onWorkerError);
+    worker.addEventListener("messageerror", this.onWorkerMessageError);
+    this.startInitWatchdog(worker);
+
+    try {
+      worker.postMessage({ type: "init", protocolVersion: WFC_PROTOCOL_VERSION });
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      const bridgeError = new WfcBridgeError(
+        "fatal",
+        `Failed to post a message to the WFC worker: ${details}`,
+        { phase: "init" },
+      );
+      this.failCurrentWorker(bridgeError);
+      throw bridgeError;
+    }
+  }
+
+  private startInitWatchdog(worker: Worker): void {
+    this.clearInitWatchdog();
+    this.initWatchdog = setTimeout(() => {
+      if (this.disposed || this.worker !== worker || this.readySettled) {
+        return;
+      }
+
+      this.failCurrentWorker(
+        new WfcBridgeError(
+          "fatal",
+          `Timed out while initializing the WFC worker after ${INIT_TIMEOUT_MS}ms.`,
+          { phase: "init" },
+        ),
+      );
+    }, INIT_TIMEOUT_MS);
+  }
+
+  private clearInitWatchdog(): void {
+    if (this.initWatchdog === null) {
+      return;
+    }
+
+    clearTimeout(this.initWatchdog);
+    this.initWatchdog = null;
+  }
+
+  private failCurrentWorker(error: Error): void {
+    this.clearInitWatchdog();
+    this.detachWorker(true);
+    this.rejectReadyOnce(error);
+    this.rejectPending(error);
+  }
+
+  private async ensureWorkerReady(): Promise<void> {
+    this.assertNotDisposed();
+    if (!this.worker) {
+      this.spawnWorker();
+    }
+    await this.readyPromise;
+  }
+
+  private requireWorker(phase: WorkerFatalPhase): Worker {
+    this.assertNotDisposed();
+    if (!this.worker) {
+      throw new WfcBridgeError(
+        "fatal",
+        "The WFC worker is no longer available.",
+        { phase },
+      );
+    }
+    return this.worker;
+  }
+
+  private createDisposedError(): WfcBridgeError {
+    return new WfcBridgeError("disposed", "The WFC worker was disposed.");
+  }
+
+  private postResetUnsafe(): void {
+    const worker = this.worker;
+    if (!worker) {
+      return;
+    }
+
+    try {
+      worker.postMessage({ type: "reset" });
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      this.failCurrentWorker(
+        new WfcBridgeError(
+          "fatal",
+          `Failed to post a message to the WFC worker: ${details}`,
+          { phase: "runtime" },
+        ),
+      );
+    }
+  }
+
+  private shouldRetryProgressiveBuild(error: unknown, attempt: number): error is WfcBridgeError {
+    if (attempt >= BUILD_RETRY_LIMIT || this.disposed) {
+      return false;
+    }
+
+    return error instanceof WfcBridgeError && error.kind === "fatal";
+  }
+
+  private async buildAllProgressivelyOnce(seed: number): Promise<BuildSummary> {
+    const total = ALL_GRID_POSITIONS.length;
+    let solvedCount = 0;
+    let fallbackCount = 0;
+
+    this.postResetUnsafe();
+
+    for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
+      this.assertNotDisposed();
+      const raw = await this.solveGridRaw(
+        pos.q,
+        pos.r,
+        this.seedForGrid(gridIndex, seed),
+      );
+      const chunk: PackedGridChunk = {
+        gridIndex,
+        status: raw.status,
+        cells: raw.cells,
+      };
+
+      if (raw.status === "fallback_water") {
+        fallbackCount += 1;
+        this.emitError({
+          message:
+            `Grid ${gridIndex} fell back to water ` +
+            `[tries=${raw.tries}, backtracks=${raw.backtracks}, dropped_count=${raw.dropped_count}, local_wfc_attempts=${raw.local_wfc_attempts}]`,
+          gridIndex,
+          recoverable: true,
+        });
+      } else {
+        solvedCount += 1;
+      }
+
+      this.emitGridSolved(chunk);
+      this.emitProgress({
+        phase: "solving",
+        completed: gridIndex + 1,
+        total,
+        gridIndex,
+        fallbackCount,
+      });
+    }
+
+    for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
+      this.assertNotDisposed();
+      const items = await this.generatePlacementsPackedRaw(
+        pos.q,
+        pos.r,
+        this.seedForGrid(gridIndex, seed),
+        0,
+        0,
+      );
+      this.emitPlacementsGenerated({ gridIndex, items });
+      this.emitProgress({
+        phase: "placements",
+        completed: gridIndex + 1,
+        total,
+        gridIndex,
+        fallbackCount,
+      });
+    }
+
+    const summary: BuildSummary = {
+      totalGrids: total,
+      solvedCount,
+      fallbackCount,
+    };
+    this.emitAllSolved(summary);
+    return summary;
+  }
+
   private onMessage = (event: MessageEvent<WorkerResponse>): void => {
     const msg = event.data;
 
     switch (msg.type) {
       case "ready":
+        this.clearInitWatchdog();
         this.resolveReadyOnce();
         break;
       case "result": {
@@ -398,37 +540,12 @@ export class WfcBridge {
     );
   };
 
-  private assertActiveWorker(): Worker {
-    if (this.terminalError) {
-      throw this.terminalError;
-    }
-    if (this.disposed) {
-      const error = new WfcBridgeError("disposed", "The WFC worker has already been disposed.");
-      this.terminalError = error;
-      throw error;
-    }
-    if (!this.worker) {
-      const error = new WfcBridgeError(
-        "fatal",
-        "The WFC worker is no longer available.",
-        { phase: "runtime" },
-      );
-      this.terminalError = error;
-      throw error;
-    }
-    return this.worker;
-  }
-
   private handleFatal(phase: WorkerFatalPhase, message: string): void {
-    if (this.terminalError) {
+    if (this.disposed) {
       return;
     }
 
-    const error = new WfcBridgeError("fatal", message, { phase });
-    this.terminalError = error;
-    this.rejectReadyOnce(error);
-    this.rejectPending(error);
-    this.detachWorker(true);
+    this.failCurrentWorker(new WfcBridgeError("fatal", message, { phase }));
   }
 
   private resolveReadyOnce(): void {
@@ -455,6 +572,7 @@ export class WfcBridge {
   }
 
   private detachWorker(terminate: boolean): void {
+    this.clearInitWatchdog();
     if (!this.worker) {
       return;
     }
@@ -507,7 +625,6 @@ function normalizeGridResult(result: PackedSolveResult, gridIndex: number): Grid
 }
 
 function unpackGridCells(cells: Int32Array): CellResult[] {
-  const stride = 5;
   const result: CellResult[] = [];
   const size = HEX_WIDTH / 2;
   const sqrt3 = Math.sqrt(3);
@@ -515,7 +632,7 @@ function unpackGridCells(cells: Int32Array): CellResult[] {
   const sizeTimesSqrt3Over2 = size * (sqrt3 / 2);
   const sizeTimesThreeOver2 = size * (3 / 2);
 
-  for (let index = 0; index < cells.length; index += stride) {
+  for (let index = 0; index < cells.length; index += PACKED_GRID_STRIDE) {
     const q = cells[index];
     const r = cells[index + 1];
     const tileId = cells[index + 2];
@@ -541,10 +658,9 @@ function unpackGridCells(cells: Int32Array): CellResult[] {
 }
 
 function unpackPlacementItems(items: Float32Array): PlacementItem[] {
-  const stride = 6;
   const result: PlacementItem[] = [];
 
-  for (let index = 0; index < items.length; index += stride) {
+  for (let index = 0; index < items.length; index += PACKED_PLACEMENT_STRIDE) {
     const placementType = Math.round(items[index]);
     const tier = Math.round(items[index + 1]);
     const spec = resolvePlacementRenderSpec(placementType, tier);
@@ -560,4 +676,14 @@ function unpackPlacementItems(items: Float32Array): PlacementItem[] {
   }
 
   return result;
+}
+
+function normalizeSeed(seed: number): number {
+  if (!Number.isFinite(seed) || !Number.isInteger(seed) || seed < 0 || !Number.isSafeInteger(seed)) {
+    throw new WfcSeedError(
+      `Seed must be a finite, non-negative safe integer. Received: ${seed}.`,
+    );
+  }
+
+  return seed;
 }

@@ -1,5 +1,5 @@
 import { WebGpuInitError } from "@hex/render";
-import { WfcBridgeError } from "@hex/wfc";
+import { WfcBridgeError, WfcSeedError } from "@hex/wfc";
 import { boot } from "./orchestrator.js";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#viewport");
@@ -20,7 +20,11 @@ void boot(canvas, statusElement, zoomElement).catch((error) => {
 });
 
 function userFacingErrorMessage(error: unknown): string {
-  if (error instanceof WebGpuInitError || error instanceof WfcBridgeError) {
+  if (
+    error instanceof WebGpuInitError
+    || error instanceof WfcBridgeError
+    || error instanceof WfcSeedError
+  ) {
     return error.userMessage;
   }
 

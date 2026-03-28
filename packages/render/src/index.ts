@@ -67,24 +67,44 @@ export async function createRenderer(
     scene.render();
   });
 
+  let disposed = false;
+
   return {
     addGrid(result) {
+      if (disposed) {
+        return;
+      }
       gridLayer.addGrid(result);
     },
     addPackedGrid(chunk) {
+      if (disposed) {
+        return;
+      }
       gridLayer.addPackedGrid(chunk);
     },
     addPlacements(items) {
+      if (disposed) {
+        return;
+      }
       placementLayer.addPlacements(items);
     },
     addPackedPlacements(chunk) {
+      if (disposed) {
+        return;
+      }
       placementLayer.addPackedPlacements(chunk);
     },
     clear() {
+      if (disposed) {
+        return;
+      }
       gridLayer.clear();
       placementLayer.clear();
     },
     updateConfig(nextConfig) {
+      if (disposed) {
+        return;
+      }
       cameraController.updateConfig(nextConfig);
     },
     subscribe(events) {
@@ -107,6 +127,10 @@ export async function createRenderer(
       return cameraController.camera;
     },
     dispose() {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
       window.removeEventListener("resize", resize);
       engine.stopRenderLoop();
       gridLayer.dispose();

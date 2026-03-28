@@ -1,9 +1,10 @@
 import init, { WfcEngine } from "../wasm/wfc_core.js";
-import type {
-  PackedSolveResult,
-  WorkerFatalPhase,
-  WorkerRequest,
-  WorkerResponse,
+import {
+  WFC_PROTOCOL_VERSION,
+  type PackedSolveResult,
+  type WorkerFatalPhase,
+  type WorkerRequest,
+  type WorkerResponse,
 } from "./types.js";
 
 let engine: WfcEngine | null = null;
@@ -105,6 +106,13 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
 
   switch (msg.type) {
     case "init":
+      if (msg.protocolVersion !== WFC_PROTOCOL_VERSION) {
+        postFatal(
+          "init",
+          `Protocol version mismatch: expected ${WFC_PROTOCOL_VERSION}, got ${msg.protocolVersion}.`,
+        );
+        break;
+      }
       void initialize();
       break;
     case "solve":
