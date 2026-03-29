@@ -214,12 +214,21 @@ impl Solver {
             return true;
         }
 
-        let mut propagation_stack = grid.fixed_cells.keys().cloned().collect::<Vec<_>>();
-        let fixed_cells = grid
-            .fixed_cells
+        let mut fixed_keys = grid.fixed_cells.keys().cloned().collect::<Vec<_>>();
+        fixed_keys.sort();
+
+        let fixed_cells = fixed_keys
             .iter()
-            .map(|(key, state)| (key.clone(), *state))
+            .map(|key| {
+                let state = grid
+                    .fixed_cells
+                    .get(key)
+                    .copied()
+                    .expect("fixed key missing from fixed_cells");
+                (key.clone(), state)
+            })
             .collect::<Vec<_>>();
+        let mut propagation_stack = fixed_keys.into_iter().rev().collect::<Vec<_>>();
 
         for (key, state) in fixed_cells {
             if grid.rules.prevents_chaining(state.tile_id)
@@ -714,6 +723,44 @@ mod tests {
         let result = solver.solve(&mut grid);
 
         assert!(!result.success, "grass-only solve should conflict with fixed water edge");
+    }
+
+    #[test]
+    fn fixed_constraint_order_is_deterministic() {
+        let road_d_id = tile_id_by_name("ROAD_D");
+        let coords = [CubeCoord::new(0, 0), CubeCoord::new(1, -1), CubeCoord::new(-1, 1)];
+        let fixed = [
+            (
+                CubeCoord::new(1, 0),
+                TileState {
+                    tile_id: road_d_id,
+                    rotation: 0,
+                    level: 0,
+                },
+            ),
+            (
+                CubeCoord::new(-1, 0),
+                TileState {
+                    tile_id: road_d_id,
+                    rotation: 3,
+                    level: 0,
+                },
+            ),
+        ];
+
+        let mut grid_a = WfcGrid::new(&coords, &fixed, None);
+        let mut grid_b = WfcGrid::new(&coords, &fixed, None);
+        let mut solver_a = Solver::new(42, 500);
+        let mut solver_b = Solver::new(42, 500);
+        let result_a = solver_a.solve(&mut grid_a);
+        let result_b = solver_b.solve(&mut grid_b);
+
+        assert_eq!(result_a.success, result_b.success);
+        assert_eq!(sorted_tiles(&result_a.tiles), sorted_tiles(&result_b.tiles));
+        assert_eq!(
+            sorted_tiles(&result_a.collapse_order),
+            sorted_tiles(&result_b.collapse_order),
+        );
     }
 
     #[test]
