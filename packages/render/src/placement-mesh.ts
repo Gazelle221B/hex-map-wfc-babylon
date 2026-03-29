@@ -20,73 +20,138 @@ import {
 
 export class PlacementMeshLayer {
   private readonly contributions = new Map<number, Map<string, Float32Array>>();
+  private readonly meshContributions = new Map<string, Map<number, Float32Array>>();
+  private readonly dirtyMeshIds = new Set<string>();
   private readonly sources = new Map<string, Mesh>();
   private readonly material: StandardMaterial;
+  private syncScheduled = false;
+  private disposed = false;
 
   constructor(private readonly scene: Scene) {
     this.material = createVertexColorMaterial(scene, "placement-placeholder-material");
   }
 
   addPlacements(items: readonly PlacementItem[]): void {
+    if (this.disposed) {
+      return;
+    }
     const nextContribution = buildPlacementContributionFromItems(items);
     const existingContribution = this.contributions.get(-1);
-    this.contributions.set(
+    this.replaceContribution(
       -1,
       existingContribution
         ? mergePlacementContributions(existingContribution, nextContribution)
         : nextContribution,
     );
-    this.sync();
+    this.scheduleSync();
   }
 
   addPackedPlacements(chunk: PackedPlacementChunk): void {
-    this.contributions.set(chunk.gridIndex, buildPlacementContributionFromPacked(chunk.items));
-    this.sync();
+    if (this.disposed) {
+      return;
+    }
+    this.replaceContribution(
+      chunk.gridIndex,
+      buildPlacementContributionFromPacked(chunk.items),
+    );
+    this.scheduleSync();
   }
 
   clear(): void {
-    this.contributions.clear();
-    for (const source of this.sources.values()) {
-      source.thinInstanceSetBuffer("matrix", new Float32Array(0), 16, true);
+    if (this.disposed) {
+      return;
     }
+    for (const meshId of this.sources.keys()) {
+      this.dirtyMeshIds.add(meshId);
+    }
+    this.contributions.clear();
+    this.meshContributions.clear();
+    this.flushSync();
   }
 
   dispose(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    this.syncScheduled = false;
     for (const source of this.sources.values()) {
       source.dispose();
     }
     this.sources.clear();
     this.contributions.clear();
+    this.meshContributions.clear();
+    this.dirtyMeshIds.clear();
     this.material.dispose();
   }
 
-  private sync(): void {
-    const grouped = new Map<string, Float32Array[]>();
-    for (const contribution of this.contributions.values()) {
-      for (const [meshId, matrices] of contribution.entries()) {
-        const bucket = grouped.get(meshId);
-        if (bucket) {
-          bucket.push(matrices);
-        } else {
-          grouped.set(meshId, [matrices]);
-        }
-      }
+  private replaceContribution(gridIndex: number, nextContribution: Map<string, Float32Array>): void {
+    const previousContribution = this.contributions.get(gridIndex);
+    this.contributions.set(gridIndex, nextContribution);
+
+    const affectedMeshIds = new Set<string>();
+    for (const meshId of previousContribution?.keys() ?? []) {
+      affectedMeshIds.add(meshId);
+    }
+    for (const meshId of nextContribution.keys()) {
+      affectedMeshIds.add(meshId);
     }
 
-    const knownKeys = new Set([...grouped.keys(), ...this.sources.keys()]);
-    for (const meshId of knownKeys) {
-      const source = this.getOrCreateSource(meshId);
-      const entries = grouped.get(meshId) ?? [];
+    for (const meshId of affectedMeshIds) {
+      const partsByGrid = this.meshContributions.get(meshId) ?? new Map<number, Float32Array>();
+      const nextMatrices = nextContribution.get(meshId);
 
-      if (entries.length === 0) {
-        source.thinInstanceSetBuffer("matrix", new Float32Array(0), 16, true);
+      if (nextMatrices) {
+        partsByGrid.set(gridIndex, nextMatrices);
+        this.meshContributions.set(meshId, partsByGrid);
+      } else {
+        partsByGrid.delete(gridIndex);
+        if (partsByGrid.size === 0) {
+          this.meshContributions.delete(meshId);
+        } else {
+          this.meshContributions.set(meshId, partsByGrid);
+        }
+      }
+
+      this.dirtyMeshIds.add(meshId);
+    }
+  }
+
+  private scheduleSync(): void {
+    if (this.syncScheduled || this.disposed) {
+      return;
+    }
+    this.syncScheduled = true;
+    queueMicrotask(() => {
+      this.syncScheduled = false;
+      this.flushSync();
+    });
+  }
+
+  private flushSync(): void {
+    if (this.disposed) {
+      return;
+    }
+
+    const dirtyMeshIds = [...this.dirtyMeshIds];
+    this.dirtyMeshIds.clear();
+
+    for (const meshId of dirtyMeshIds) {
+      const entries = this.meshContributions.get(meshId);
+
+      if (!entries || entries.size === 0) {
+        this.sources
+          .get(meshId)
+          ?.thinInstanceSetBuffer("matrix", new Float32Array(0), 16, true);
         continue;
       }
 
-      const totalLength = entries.reduce((sum, item) => sum + item.length, 0);
+      const source = this.getOrCreateSource(meshId);
+      const matricesByGrid = [...entries.values()];
+      const totalLength = matricesByGrid.reduce((sum, item) => sum + item.length, 0);
       const matrices = new Float32Array(totalLength);
       let offset = 0;
-      for (const entry of entries) {
+      for (const entry of matricesByGrid) {
         matrices.set(entry, offset);
         offset += entry.length;
       }
@@ -102,9 +167,7 @@ export class PlacementMeshLayer {
     }
 
     const source = createPlacementSource(this.scene, this.material, meshId);
-    source.isVisible = false;
-    source.isPickable = false;
-    source.alwaysSelectAsActiveMesh = true;
+    configureThinInstanceSource(source);
     this.sources.set(meshId, source);
     return source;
   }
@@ -218,6 +281,27 @@ function createPlacementSource(scene: Scene, material: StandardMaterial, meshId:
       );
     default:
       return createColoredBox(scene, material, `placement-${meshId}`, { width: 0.32, height: 0.32, depth: 0.32 }, new Color3(0.8, 0.2, 0.7), 0.16);
+  }
+}
+
+function configureThinInstanceSource(mesh: Mesh): void {
+  mesh.isVisible = true;
+  mesh.isPickable = false;
+  mesh.alwaysSelectAsActiveMesh = true;
+
+  // Babylon 8.56.2 still renders the source mesh by default, while `isVisible = false`
+  // also suppresses thin instances and `thinInstanceAddSelf()` only adds an identity instance.
+  // Keep this internal flag until Babylon exposes a supported instances-only toggle.
+  const internalData = (mesh as Mesh & {
+    _internalAbstractMeshDataInfo?: {
+      _onlyForInstances?: boolean;
+      _onlyForInstancesIntermediate?: boolean;
+    };
+  })._internalAbstractMeshDataInfo;
+
+  if (internalData) {
+    internalData._onlyForInstances = true;
+    internalData._onlyForInstancesIntermediate = true;
   }
 }
 

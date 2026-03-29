@@ -64,9 +64,7 @@ function createTemplateMesh(scene: Scene, meshId: string, material: StandardMate
   applySolidVertexColor(mesh, style.color);
   mesh.material = material;
   mesh.useVertexColors = true;
-  mesh.isVisible = false;
-  mesh.isPickable = false;
-  mesh.alwaysSelectAsActiveMesh = true;
+  configureThinInstanceSource(mesh);
 
   return mesh;
 }
@@ -148,4 +146,25 @@ function resolveTileStyle(meshId: string): TileStyle {
     diameterTop: 1.9,
     diameterBottom: 1.95,
   };
+}
+
+function configureThinInstanceSource(mesh: Mesh): void {
+  mesh.isVisible = true;
+  mesh.isPickable = false;
+  mesh.alwaysSelectAsActiveMesh = true;
+
+  // Babylon 8.56.2 still renders the source mesh by default, while `isVisible = false`
+  // also suppresses thin instances and `thinInstanceAddSelf()` only adds an identity instance.
+  // Keep this internal flag until Babylon exposes a supported instances-only toggle.
+  const internalData = (mesh as Mesh & {
+    _internalAbstractMeshDataInfo?: {
+      _onlyForInstances?: boolean;
+      _onlyForInstancesIntermediate?: boolean;
+    };
+  })._internalAbstractMeshDataInfo;
+
+  if (internalData) {
+    internalData._onlyForInstances = true;
+    internalData._onlyForInstancesIntermediate = true;
+  }
 }

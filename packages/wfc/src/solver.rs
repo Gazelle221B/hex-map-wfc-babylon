@@ -1,9 +1,9 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 
 use crate::grid::WfcGrid;
 use crate::hex::HexDir;
 use crate::rng::Rng;
-use crate::tile::TileState;
+use crate::tile::{EdgeType, TileState, LEVELS_COUNT};
 
 /// A single entry in the backtracking trail.
 /// Records a possibility that was removed during propagation.
@@ -72,6 +72,10 @@ impl Solver {
         self.collapse_order.clear();
         self.backtracks = 0;
 
+        if !self.initialize_fixed_constraints(grid) {
+            return self.build_result(grid, false);
+        }
+
         if grid.cells.values().any(|cell| cell.possibilities.is_empty()) {
             return self.build_result(grid, false);
         }
@@ -95,12 +99,13 @@ impl Solver {
                 .map(|d| &d.tried_states);
 
             let cell = grid.cells.get(&target).unwrap();
-            let available: Vec<u32> = cell
+            let mut available: Vec<u32> = cell
                 .possibilities
                 .iter()
                 .filter(|k| tried.is_none_or(|t| !t.contains(k)))
                 .copied()
                 .collect();
+            available.sort_unstable();
 
             if available.is_empty() {
                 // Contradiction - try backtracking
@@ -143,8 +148,24 @@ impl Solver {
                 level: chosen.level,
             });
 
+            let mut propagation_stack = vec![target.clone()];
+            if grid.rules.prevents_chaining(chosen.tile_id)
+                && !self.prune_chaining(
+                    grid,
+                    &target,
+                    chosen.tile_id,
+                    &mut propagation_stack,
+                    true,
+                )
+            {
+                if !self.backtrack(grid) {
+                    return self.build_result(grid, false);
+                }
+                continue;
+            }
+
             // Propagate constraints
-            if !self.propagate(grid, &target) {
+            if !self.propagate(grid, &mut propagation_stack, true) {
                 // Contradiction during propagation - backtrack
                 if !self.backtrack(grid) {
                     return self.build_result(grid, false);
@@ -154,104 +175,213 @@ impl Solver {
     }
 
     /// Find the uncollapsed cell with the lowest entropy.
-    /// Uses deterministic tie-breaking by sorting keys to ensure
-    /// same-seed reproducibility regardless of HashMap iteration order.
+    /// Uses deterministic tie-breaking based on the canonical key order
+    /// computed when the grid is created.
     fn find_lowest_entropy(&mut self, grid: &WfcGrid) -> Option<String> {
-        // Collect uncollapsed cells with their noise values
-        let mut candidates: Vec<(&String, f64)> = Vec::new();
+        let mut best_key: Option<&String> = None;
+        let mut best_entropy = f64::INFINITY;
 
-        // Sort keys for deterministic iteration
-        let mut keys: Vec<&String> = grid.cells.keys().collect();
-        keys.sort();
-
-        for key in keys {
+        for key in grid.ordered_keys() {
             let cell = &grid.cells[key];
             if cell.collapsed || cell.possibilities.is_empty() {
                 continue;
             }
+
             let noise = self.rng.f64();
             let entropy = cell.entropy(noise);
-            candidates.push((key, entropy));
+            if entropy < best_entropy {
+                best_entropy = entropy;
+                best_key = Some(key);
+            }
         }
 
-        candidates
-            .into_iter()
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-            .map(|(key, _)| key.clone())
+        best_key.cloned()
     }
 
     /// Choose a state from available options using weighted random selection.
     fn choose_state(&mut self, grid: &WfcGrid, available: &[u32]) -> TileState {
-        let tiles = grid.tiles();
         let weights: Vec<f64> = available
             .iter()
-            .map(|&key| {
-                let state = compact_to_state(key);
-                tiles[state.tile_id as usize].weight
-            })
+            .map(|&key| grid.rules.weight_for_state(key))
             .collect();
 
         let idx = self.rng.weighted_choice(&weights);
         compact_to_state(available[idx])
     }
 
-    /// Propagate constraints from a collapsed cell to its neighbors.
-    /// Returns false if a contradiction is detected.
-    fn propagate(&mut self, grid: &mut WfcGrid, start_key: &str) -> bool {
-        let mut queue: VecDeque<String> = VecDeque::new();
-        queue.push_back(start_key.to_string());
+    fn initialize_fixed_constraints(&mut self, grid: &mut WfcGrid) -> bool {
+        if grid.fixed_cells.is_empty() {
+            return true;
+        }
 
-        while let Some(current_key) = queue.pop_front() {
-            let current_cell = match grid.cells.get(&current_key) {
-                Some(c) => c,
-                None => continue,
-            };
-            let coord = current_cell.coord;
+        let mut fixed_keys = grid.fixed_cells.keys().cloned().collect::<Vec<_>>();
+        fixed_keys.sort();
 
-            for dir in HexDir::ALL {
-                let neighbor_coord = coord.neighbor(dir);
-                let neighbor_key = neighbor_coord.key();
+        let fixed_cells = fixed_keys
+            .iter()
+            .map(|key| {
+                let state = grid
+                    .fixed_cells
+                    .get(key)
+                    .copied()
+                    .expect("fixed key missing from fixed_cells");
+                (key.clone(), state)
+            })
+            .collect::<Vec<_>>();
+        let mut propagation_stack = fixed_keys.into_iter().rev().collect::<Vec<_>>();
 
-                let neighbor = match grid.cells.get(&neighbor_key) {
-                    Some(n) if !n.collapsed => n,
-                    _ => continue,
-                };
+        for (key, state) in fixed_cells {
+            if grid.rules.prevents_chaining(state.tile_id)
+                && !self.prune_chaining(
+                    grid,
+                    &key,
+                    state.tile_id,
+                    &mut propagation_stack,
+                    false,
+                )
+            {
+                return false;
+            }
+        }
 
-                // Compute which neighbor states are still valid
-                let valid_neighbor_states = self.compute_valid_neighbors(grid, &current_key, dir);
+        self.propagate(grid, &mut propagation_stack, false)
+    }
 
-                // Remove invalid states from neighbor
-                let to_remove: Vec<u32> = neighbor
+    fn prune_chaining(
+        &mut self,
+        grid: &mut WfcGrid,
+        key: &str,
+        tile_id: u16,
+        propagation_stack: &mut Vec<String>,
+        record_trail: bool,
+    ) -> bool {
+        let neighbor_keys = match grid.neighbors(key) {
+            Some(neighbors) => neighbors.iter().map(|neighbor| neighbor.key.clone()).collect::<Vec<_>>(),
+            None => return true,
+        };
+
+        for neighbor_key in neighbor_keys {
+            let to_remove = match grid.cells.get(&neighbor_key) {
+                Some(neighbor) if !neighbor.collapsed => neighbor
                     .possibilities
                     .iter()
-                    .filter(|k| !valid_neighbor_states.contains(k))
+                    .filter(|state_key| ((**state_key >> 16) as u16) == tile_id)
                     .copied()
-                    .collect();
+                    .collect::<Vec<_>>(),
+                _ => continue,
+            };
+
+            if to_remove.is_empty() {
+                continue;
+            }
+
+            let neighbor_cell = grid.cells.get_mut(&neighbor_key).unwrap();
+            for state_key in to_remove {
+                if neighbor_cell.possibilities.remove(&state_key) && record_trail {
+                    self.trail.push(TrailEntry {
+                        coord_key: neighbor_key.clone(),
+                        state_key,
+                    });
+                }
+            }
+
+            if neighbor_cell.possibilities.is_empty() {
+                return false;
+            }
+
+            propagation_stack.push(neighbor_key);
+        }
+
+        true
+    }
+
+    /// Propagate constraints from the current stack to neighboring solve cells.
+    /// Returns false if a contradiction is detected.
+    fn propagate(
+        &mut self,
+        grid: &mut WfcGrid,
+        propagation_stack: &mut Vec<String>,
+        record_trail: bool,
+    ) -> bool {
+        while let Some(current_key) = propagation_stack.pop() {
+            let fixed_state = grid.fixed_state(&current_key);
+            let neighbors = match grid.neighbors(&current_key) {
+                Some(neighbors) => neighbors
+                    .iter()
+                    .map(|neighbor| (neighbor.key.clone(), neighbor.dir, neighbor.return_dir))
+                    .collect::<Vec<_>>(),
+                None => continue,
+            };
+
+            for (neighbor_key, dir, return_dir) in neighbors {
+                let mut valid_neighbor_states = HashSet::new();
+                let mut looked_up = HashSet::new();
+
+                if let Some(state) = fixed_state {
+                    self.extend_valid_neighbors(
+                        grid,
+                        state.compact_key(),
+                        dir,
+                        return_dir,
+                        &mut valid_neighbor_states,
+                        &mut looked_up,
+                    );
+                } else {
+                    let Some(current_cell) = grid.cells.get(&current_key) else {
+                        continue;
+                    };
+                    for &state_key in &current_cell.possibilities {
+                        self.extend_valid_neighbors(
+                            grid,
+                            state_key,
+                            dir,
+                            return_dir,
+                            &mut valid_neighbor_states,
+                            &mut looked_up,
+                        );
+                    }
+                }
+
+                let to_remove = match grid.cells.get(&neighbor_key) {
+                    Some(neighbor) if !neighbor.collapsed => neighbor
+                        .possibilities
+                        .iter()
+                        .filter(|state_key| !valid_neighbor_states.contains(state_key))
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    _ => continue,
+                };
 
                 if to_remove.is_empty() {
                     continue;
                 }
 
-                let neighbor_cell = grid.cells.get_mut(&neighbor_key).unwrap();
-                for &key in &to_remove {
-                    if neighbor_cell.possibilities.remove(&key) {
-                        self.trail.push(TrailEntry {
-                            coord_key: neighbor_key.clone(),
-                            state_key: key,
-                        });
+                let mut collapsed_state = None;
+                {
+                    let neighbor_cell = grid.cells.get_mut(&neighbor_key).unwrap();
+                    for state_key in to_remove {
+                        if neighbor_cell.possibilities.remove(&state_key) && record_trail {
+                            self.trail.push(TrailEntry {
+                                coord_key: neighbor_key.clone(),
+                                state_key,
+                            });
+                        }
+                    }
+
+                    if neighbor_cell.possibilities.is_empty() {
+                        return false;
+                    }
+
+                    if !neighbor_cell.collapsed && neighbor_cell.possibilities.len() == 1 {
+                        let &only_key = neighbor_cell.possibilities.iter().next().unwrap();
+                        let state = compact_to_state(only_key);
+                        let coord = neighbor_cell.coord;
+                        neighbor_cell.collapse(state);
+                        collapsed_state = Some((coord, state));
                     }
                 }
 
-                if neighbor_cell.possibilities.is_empty() {
-                    return false; // Contradiction
-                }
-
-                // If only one possibility left, auto-collapse
-                if neighbor_cell.possibilities.len() == 1 {
-                    let &only_key = neighbor_cell.possibilities.iter().next().unwrap();
-                    let state = compact_to_state(only_key);
-                    let coord = neighbor_cell.coord;
-                    neighbor_cell.collapse(state);
+                if let Some((coord, state)) = collapsed_state {
                     self.collapse_order.push(CollapsedTile {
                         q: coord.q,
                         r: coord.r,
@@ -260,47 +390,57 @@ impl Solver {
                         rotation: state.rotation,
                         level: state.level,
                     });
+
+                    if grid.rules.prevents_chaining(state.tile_id)
+                        && !self.prune_chaining(
+                            grid,
+                            &neighbor_key,
+                            state.tile_id,
+                            propagation_stack,
+                            record_trail,
+                        )
+                    {
+                        return false;
+                    }
                 }
 
-                queue.push_back(neighbor_key);
+                propagation_stack.push(neighbor_key);
             }
         }
 
         true
     }
 
-    /// Compute which neighbor states are valid given the current cell's state(s).
-    fn compute_valid_neighbors(
+    fn extend_valid_neighbors(
         &self,
         grid: &WfcGrid,
-        cell_key: &str,
+        state_key: u32,
         dir: HexDir,
-    ) -> HashSet<u32> {
-        let cell = &grid.cells[cell_key];
-        let opp_dir = dir.opposite();
-        let mut valid = HashSet::new();
+        return_dir: HexDir,
+        valid_neighbors: &mut HashSet<u32>,
+        looked_up: &mut HashSet<(EdgeType, u8)>,
+    ) {
+        let (edge_type, edge_level) = grid.rules.state_edges[&state_key][dir.index()];
 
-        for &state_key in &cell.possibilities {
-            let (edge_type, edge_level) = grid.rules.state_edges[&state_key][dir.index()];
-
-            // Find neighbor states that have matching edge on opposite side
-            if let Some(matching) = grid.rules.get_by_edge(edge_type, opp_dir, edge_level) {
-                valid.extend(matching);
-            }
-
-            // Grass wildcard: any level matches
-            if edge_type == crate::tile::EdgeType::Grass {
-                for level in 0..crate::tile::LEVELS_COUNT {
-                    if let Some(matching) =
-                        grid.rules.get_by_edge(edge_type, opp_dir, level)
-                    {
-                        valid.extend(matching);
-                    }
+        if edge_type == EdgeType::Grass {
+            for level in 0..LEVELS_COUNT {
+                if !looked_up.insert((edge_type, level)) {
+                    continue;
+                }
+                if let Some(matching) = grid.rules.get_by_edge(edge_type, return_dir, level) {
+                    valid_neighbors.extend(matching.iter().copied());
                 }
             }
+            return;
         }
 
-        valid
+        if !looked_up.insert((edge_type, edge_level)) {
+            return;
+        }
+
+        if let Some(matching) = grid.rules.get_by_edge(edge_type, return_dir, edge_level) {
+            valid_neighbors.extend(matching.iter().copied());
+        }
     }
 
     /// Backtrack by undoing the last decision.
@@ -384,8 +524,54 @@ mod tests {
     use super::*;
     use crate::grid::WfcGrid;
     use crate::hex::CubeCoord;
-    use crate::tile::edges_compatible;
+    use crate::tile::{build_tile_list, edges_compatible, WATER_TILE_ID};
     use std::collections::HashMap;
+
+    fn sorted_tiles(tiles: &[CollapsedTile]) -> Vec<(i32, i32, u16, u8, u8)> {
+        let mut sorted = tiles
+            .iter()
+            .map(|tile| {
+                (
+                    tile.q,
+                    tile.r,
+                    tile.tile_id,
+                    tile.rotation,
+                    tile.level,
+                )
+            })
+            .collect::<Vec<_>>();
+        sorted.sort();
+        sorted
+    }
+
+    fn tile_id_by_name(name: &str) -> u16 {
+        build_tile_list()
+            .into_iter()
+            .find(|tile| tile.name == name)
+            .map(|tile| tile.id)
+            .unwrap()
+    }
+
+    fn same_tile_can_match_across_direction(tile_id: u16, dir: HexDir) -> bool {
+        let tiles = build_tile_list();
+        let tile = &tiles[tile_id as usize];
+
+        for left_rotation in 0..6u8 {
+            for right_rotation in 0..6u8 {
+                let left_edge = crate::tile::get_edge_type(tile, left_rotation, dir);
+                let left_level = crate::tile::get_edge_level(tile, left_rotation, dir, 0);
+                let right_edge = crate::tile::get_edge_type(tile, right_rotation, dir.opposite());
+                let right_level =
+                    crate::tile::get_edge_level(tile, right_rotation, dir.opposite(), 0);
+
+                if edges_compatible(left_edge, left_level, right_edge, right_level) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
 
     #[test]
     fn compact_key_roundtrip() {
@@ -519,5 +705,123 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn fixed_cells_apply_boundary_constraints() {
+        let coords = [CubeCoord::new(0, 0)];
+        let fixed = [(
+            CubeCoord::new(1, 0),
+            TileState {
+                tile_id: WATER_TILE_ID,
+                rotation: 0,
+                level: 0,
+            },
+        )];
+        let mut grid = WfcGrid::new(&coords, &fixed, Some(&[0]));
+        let mut solver = Solver::new(42, 500);
+        let result = solver.solve(&mut grid);
+
+        assert!(!result.success, "grass-only solve should conflict with fixed water edge");
+    }
+
+    #[test]
+    fn fixed_constraint_order_is_deterministic() {
+        let road_d_id = tile_id_by_name("ROAD_D");
+        let coords = [CubeCoord::new(0, 0), CubeCoord::new(1, -1), CubeCoord::new(-1, 1)];
+        let fixed = [
+            (
+                CubeCoord::new(1, 0),
+                TileState {
+                    tile_id: road_d_id,
+                    rotation: 0,
+                    level: 0,
+                },
+            ),
+            (
+                CubeCoord::new(-1, 0),
+                TileState {
+                    tile_id: road_d_id,
+                    rotation: 3,
+                    level: 0,
+                },
+            ),
+        ];
+
+        let mut grid_a = WfcGrid::new(&coords, &fixed, None);
+        let mut grid_b = WfcGrid::new(&coords, &fixed, None);
+        let mut solver_a = Solver::new(42, 500);
+        let mut solver_b = Solver::new(42, 500);
+        let result_a = solver_a.solve(&mut grid_a);
+        let result_b = solver_b.solve(&mut grid_b);
+
+        assert_eq!(result_a.success, result_b.success);
+        assert_eq!(sorted_tiles(&result_a.tiles), sorted_tiles(&result_b.tiles));
+        assert_eq!(
+            sorted_tiles(&result_a.collapse_order),
+            sorted_tiles(&result_b.collapse_order),
+        );
+    }
+
+    #[test]
+    fn prevent_chaining_applies_to_fixed_neighbors() {
+        let road_d_id = tile_id_by_name("ROAD_D");
+        assert!(same_tile_can_match_across_direction(road_d_id, HexDir::E));
+
+        let coords = [CubeCoord::new(0, 0)];
+        let fixed = [(
+            CubeCoord::new(1, 0),
+            TileState {
+                tile_id: road_d_id,
+                rotation: 0,
+                level: 0,
+            },
+        )];
+        let mut grid = WfcGrid::new(&coords, &fixed, Some(&[road_d_id]));
+        let mut solver = Solver::new(42, 500);
+        let result = solver.solve(&mut grid);
+
+        assert!(
+            !result.success,
+            "fixed prevent-chaining tile should remove matching tile candidates from neighbors",
+        );
+    }
+
+    #[test]
+    fn prevent_chaining_applies_after_collapse() {
+        let road_d_id = tile_id_by_name("ROAD_D");
+        assert!(same_tile_can_match_across_direction(road_d_id, HexDir::E));
+
+        let coords = [CubeCoord::new(0, 0), CubeCoord::new(1, 0)];
+        let mut grid = WfcGrid::new(&coords, &[], Some(&[road_d_id]));
+        let mut solver = Solver::new(42, 500);
+        let result = solver.solve(&mut grid);
+
+        assert!(
+            !result.success,
+            "adjacent prevent-chaining tiles should be rejected once one cell collapses",
+        );
+    }
+
+    #[test]
+    fn canonical_order_is_independent_of_input_order() {
+        let coords = CubeCoord::new(0, 0).cells_in_radius(2);
+        let mut reversed = coords.clone();
+        reversed.reverse();
+
+        let mut grid_a = WfcGrid::new(&coords, &[], None);
+        let mut grid_b = WfcGrid::new(&reversed, &[], None);
+        let mut solver_a = Solver::new(42, 500);
+        let mut solver_b = Solver::new(42, 500);
+        let result_a = solver_a.solve(&mut grid_a);
+        let result_b = solver_b.solve(&mut grid_b);
+
+        assert!(result_a.success);
+        assert!(result_b.success);
+        assert_eq!(sorted_tiles(&result_a.tiles), sorted_tiles(&result_b.tiles));
+        assert_eq!(
+            sorted_tiles(&result_a.collapse_order),
+            sorted_tiles(&result_b.collapse_order),
+        );
     }
 }
