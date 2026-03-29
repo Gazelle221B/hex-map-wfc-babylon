@@ -3,7 +3,6 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 
-export const DEFAULT_REPO_PATH = "/Users/kairyon/projects/hex-map-wfc";
 export const GRID_RADIUS = 2;
 export const TILE_RADIUS = 8;
 export const LOCAL_SOLVE_RADIUS = 2;
@@ -14,7 +13,7 @@ export const DEFAULT_SINGLE_PASS_SEEDS = [0, 1, 2, 10, 42];
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const mode = parseMode(args.mode ?? "progressive");
-  const repoPath = path.resolve(args.repo ?? DEFAULT_REPO_PATH);
+  const repoPath = resolveLegacyRepoPath(args.repo);
   const outputPath = path.resolve(args.out ?? defaultOutputPath(mode));
   const seeds = parseSeeds(args.seeds ?? args.seed ?? defaultSeedsForMode(mode));
 
@@ -85,6 +84,16 @@ export function defaultOutputPath(mode) {
 
 export function defaultSeedsForMode(mode) {
   return (mode === "progressive" ? DEFAULT_PROGRESSIVE_SEEDS : DEFAULT_SINGLE_PASS_SEEDS).join(",");
+}
+
+export function resolveLegacyRepoPath(repoPath) {
+  const candidate = repoPath ?? process.env.LEGACY_WFC_REPO;
+  if (!candidate) {
+    throw new Error(
+      "Legacy fixture export requires the original JS repo path. Pass --repo or set LEGACY_WFC_REPO.",
+    );
+  }
+  return path.resolve(candidate);
 }
 
 export async function loadLegacyModules(repoPath, instanceKey = "default") {
@@ -674,13 +683,6 @@ export class LegacyFixtureRunner {
     this.applyTileResults(tiles, "BUILD_ALL");
 
     const tileMap = new Map(tiles.map((tile) => [this.modules.core.cubeKey(tile.q, tile.r, tile.s), tile]));
-    const orderBuckets = new Map();
-    for (const tile of collapseOrder) {
-      const key = this.modules.core.cubeKey(tile.q, tile.r, tile.s);
-      const bucket = orderBuckets.get(key) ?? [];
-      bucket.push(tile);
-      orderBuckets.set(key, bucket);
-    }
 
     return {
       ...baseFixture,

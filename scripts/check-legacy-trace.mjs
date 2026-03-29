@@ -3,10 +3,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
-  DEFAULT_REPO_PATH,
   LegacyFixtureRunner,
   defaultOutputPath,
   loadLegacyModules,
+  resolveLegacyRepoPath,
 } from "./export-legacy-wfc-fixtures.mjs";
 import { bucketSinglePassResult } from "./single-pass-grid-buckets.mjs";
 
@@ -23,7 +23,7 @@ const DEFAULT_WATCH_AFTER_STEPS = [349, 350];
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const mode = args.mode ?? DEFAULT_MODE;
-  const repoPath = path.resolve(args.repo ?? DEFAULT_REPO_PATH);
+  const repoPath = resolveLegacyRepoPath(args.repo);
   const fixturePath = path.resolve(args.fixture ?? defaultOutputPath(mode));
   const seed = parseIntArg(args.seed ?? "42", "seed");
   const gridIndex = parseIntArg(args.gridIndex ?? "2", "gridIndex");

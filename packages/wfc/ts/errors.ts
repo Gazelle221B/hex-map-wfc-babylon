@@ -1,6 +1,6 @@
 import type { WorkerFatalPhase } from "./types.js";
 
-export type WfcBridgeErrorKind = "busy" | "disposed" | "fatal";
+export type WfcBridgeErrorKind = "busy" | "disposed" | "fatal" | "request";
 
 const DEFAULT_SEED_USER_MESSAGE =
   "Seed must be a whole, non-negative number within the supported range.";
@@ -15,6 +15,10 @@ function defaultUserMessage(
 
   if (kind === "disposed") {
     return "The map generator stopped before finishing. Reload the page and try again.";
+  }
+
+  if (kind === "request") {
+    return "Map generation failed for this request. Try again.";
   }
 
   if (phase === "init") {

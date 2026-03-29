@@ -575,7 +575,7 @@ export class WfcBridge {
         const pending = this.pending.get(message.id);
         if (pending) {
           this.pending.delete(message.id);
-          pending.reject(new WfcBridgeError("fatal", message.message, { phase: "runtime" }));
+          pending.reject(new WfcBridgeError("request", message.message));
         }
         break;
       }
