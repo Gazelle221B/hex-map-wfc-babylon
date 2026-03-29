@@ -137,14 +137,16 @@ export class PlacementMeshLayer {
     this.dirtyMeshIds.clear();
 
     for (const meshId of dirtyMeshIds) {
-      const source = this.getOrCreateSource(meshId);
       const entries = this.meshContributions.get(meshId);
 
       if (!entries || entries.size === 0) {
-        source.thinInstanceSetBuffer("matrix", new Float32Array(0), 16, true);
+        this.sources
+          .get(meshId)
+          ?.thinInstanceSetBuffer("matrix", new Float32Array(0), 16, true);
         continue;
       }
 
+      const source = this.getOrCreateSource(meshId);
       const matricesByGrid = [...entries.values()];
       const totalLength = matricesByGrid.reduce((sum, item) => sum + item.length, 0);
       const matrices = new Float32Array(totalLength);
