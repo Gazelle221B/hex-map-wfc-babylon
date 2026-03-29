@@ -1,7 +1,7 @@
 use noise::{NoiseFn, Simplex};
 
 use crate::hex::CubeCoord;
-use crate::rng::Rng;
+use crate::rng::{RandomSource, Rng};
 
 /// Noise frequencies for different placement types.
 pub const TREE_FREQUENCY: f64 = 0.05;

@@ -1,8 +1,5 @@
 /* @ts-self-types="./wfc_core.d.ts" */
 
-/**
- * The WFC engine, holding global state across multiple grid solves.
- */
 export class WfcEngine {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
@@ -15,7 +12,44 @@ export class WfcEngine {
         wasm.__wbg_wfcengine_free(ptr, 0);
     }
     /**
-     * Generate placements for a solved grid.
+     * @param {any} options
+     * @returns {any}
+     */
+    debug_legacy_trace_grid_once(options) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.wfcengine_debug_legacy_trace_grid_once(retptr, this.__wbg_ptr, addHeapObject(options));
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return takeObject(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * @param {any} options
+     * @returns {any}
+     */
+    debug_legacy_trace_single_pass_once(options) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.wfcengine_debug_legacy_trace_single_pass_once(retptr, this.__wbg_ptr, addHeapObject(options));
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return takeObject(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * @param {number} grid_q
      * @param {number} grid_r
      * @param {bigint} seed
@@ -39,7 +73,6 @@ export class WfcEngine {
         }
     }
     /**
-     * Generate packed placements for a solved grid.
      * @param {number} grid_q
      * @param {number} grid_r
      * @param {bigint} seed
@@ -63,38 +96,29 @@ export class WfcEngine {
         }
     }
     /**
-     * Get the number of cells in the global map.
      * @returns {number}
      */
     global_cell_count() {
         const ret = wasm.wfcengine_global_cell_count(this.__wbg_ptr);
         return ret >>> 0;
     }
-    /**
-     * Create a new WFC engine.
-     */
     constructor() {
         const ret = wasm.wfcengine_new();
         this.__wbg_ptr = ret >>> 0;
         WfcEngineFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
-    /**
-     * Reset the engine, clearing all global state.
-     */
     reset() {
         wasm.wfcengine_reset(this.__wbg_ptr);
     }
     /**
-     * Solve all 19 grids in order (center first, then outward).
-     * Returns an array of JsSolveResult.
-     * @param {bigint} seed
+     * @param {any} options
      * @returns {any}
      */
-    solve_all(seed) {
+    solve_all_single_pass(options) {
         try {
             const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            wasm.wfcengine_solve_all(retptr, this.__wbg_ptr, seed);
+            wasm.wfcengine_solve_all_single_pass(retptr, this.__wbg_ptr, addHeapObject(options));
             var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
             var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
             var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
@@ -107,8 +131,25 @@ export class WfcEngine {
         }
     }
     /**
-     * Solve a single grid at the given position.
-     * Returns a JsSolveResult via serde_wasm_bindgen.
+     * @param {any} options
+     * @returns {any}
+     */
+    solve_all_single_pass_packed(options) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.wfcengine_solve_all_single_pass_packed(retptr, this.__wbg_ptr, addHeapObject(options));
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return takeObject(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * @param {any} options
      * @returns {any}
      */
@@ -128,7 +169,6 @@ export class WfcEngine {
         }
     }
     /**
-     * Solve a single grid and return a packed cell buffer plus metadata.
      * @param {any} options
      * @returns {any}
      */
@@ -203,6 +243,10 @@ function __wbg_get_imports() {
             const ret = typeof(val) === 'object' && val !== null;
             return ret;
         },
+        __wbg___wbindgen_is_string_7ef6b97b02428fae: function(arg0) {
+            const ret = typeof(getObject(arg0)) === 'string';
+            return ret;
+        },
         __wbg___wbindgen_is_undefined_52709e72fb9f179c: function(arg0) {
             const ret = getObject(arg0) === undefined;
             return ret;
@@ -240,10 +284,18 @@ function __wbg_get_imports() {
             const ret = getObject(arg0).done;
             return ret;
         },
+        __wbg_entries_e8a20ff8c9757101: function(arg0) {
+            const ret = Object.entries(getObject(arg0));
+            return addHeapObject(ret);
+        },
         __wbg_get_326e41e095fb2575: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(getObject(arg0), getObject(arg1));
             return addHeapObject(ret);
         }, arguments); },
+        __wbg_get_a8ee5c45dabc1b3b: function(arg0, arg1) {
+            const ret = getObject(arg0)[arg1 >>> 0];
+            return addHeapObject(ret);
+        },
         __wbg_get_unchecked_329cfe50afab7352: function(arg0, arg1) {
             const ret = getObject(arg0)[arg1 >>> 0];
             return addHeapObject(ret);

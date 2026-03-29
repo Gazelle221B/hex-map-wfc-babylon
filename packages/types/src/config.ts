@@ -8,6 +8,8 @@ export interface MapConfig {
   readonly gridRadius: number;
   readonly maxBacktracks: number;
   readonly maxTries: number;
+  readonly wfcMode: "legacy-compat" | "modern-fast";
+  readonly buildMode: "progressive" | "single-pass";
 
   // --- AO ---
   readonly aoEnabled: boolean;
@@ -56,6 +58,8 @@ export const DEFAULT_CONFIG: MapConfig = {
   gridRadius: 8,
   maxBacktracks: 500,
   maxTries: 2,
+  wfcMode: "legacy-compat",
+  buildMode: "progressive",
 
   aoEnabled: true,
   aoRadius: 2.0,

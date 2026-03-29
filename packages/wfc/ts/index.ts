@@ -7,10 +7,14 @@ export {
   gridPositionToIndex,
 } from "./grid-positions.js";
 export type {
+  PackedSinglePassResult,
   PackedSolveResult,
   WorkerFatalPhase,
   WorkerRequest,
   WorkerResponse,
+  CoordData,
   TileData,
+  SolveResultData,
   PlacementData,
+  WfcMode,
 } from "./types.js";

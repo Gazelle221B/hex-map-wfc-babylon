@@ -31,8 +31,15 @@ export class GridMeshLayer {
     });
     this.addPackedGrid({
       gridIndex: result.gridIndex,
-      status: "solved",
+      status: result.status,
       cells,
+      collapseOrder: new Int32Array(0),
+      changedFixedCells: new Int32Array(0),
+      unfixedCells: new Int32Array(0),
+      droppedCells: new Int32Array(0),
+      lastConflict: null,
+      neighborConflict: null,
+      stats: result.stats,
     });
   }
 
