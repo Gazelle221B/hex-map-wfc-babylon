@@ -78,14 +78,14 @@ impl AdjacencyRules {
             let key = state.compact_key();
             let tile = &tiles[state.tile_id as usize];
             let mut edges = [(crate::tile::EdgeType::Grass, 0u8); 6];
-
-            if allowed_type_set
+            let is_allowed = allowed_type_set
                 .as_ref()
-                .is_none_or(|type_set| type_set.contains(&state.tile_id))
-            {
+                .is_none_or(|type_set| type_set.contains(&state.tile_id));
+
+            if is_allowed {
                 all_state_keys.push(key);
+                state_weights.insert(key, tile.weight);
             }
-            state_weights.insert(key, tile.weight);
             if tile.prevent_chaining {
                 no_chain_types.insert(tile.id);
             }
@@ -95,13 +95,15 @@ impl AdjacencyRules {
                 let edge_level = get_edge_level(tile, state.rotation, dir, state.level);
                 edges[dir.index()] = (edge_type, edge_level);
 
-                let dir_maps = by_edge.entry(edge_type).or_insert_with(|| {
-                    (0..6).map(|_| HashMap::new()).collect()
-                });
-                dir_maps[dir.index()]
-                    .entry(edge_level)
-                    .or_default()
-                    .insert(key);
+                if is_allowed {
+                    let dir_maps = by_edge.entry(edge_type).or_insert_with(|| {
+                        (0..6).map(|_| HashMap::new()).collect()
+                    });
+                    dir_maps[dir.index()]
+                        .entry(edge_level)
+                        .or_default()
+                        .insert(key);
+                }
             }
 
             state_edges.insert(key, edges);
@@ -303,6 +305,14 @@ impl WfcGrid {
 mod tests {
     use super::*;
 
+    fn tile_id_by_name(name: &str) -> u16 {
+        build_tile_list()
+            .into_iter()
+            .find(|tile| tile.name == name)
+            .map(|tile| tile.id)
+            .unwrap()
+    }
+
     #[test]
     fn grid_with_radius_8_has_217_cells() {
         let grid = WfcGrid::with_radius(8, None);
@@ -360,6 +370,53 @@ mod tests {
         let a = shared_rules(Some(&[0, 1]));
         let b = shared_rules(Some(&[1, 0, 1]));
         assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn filtered_rules_only_expose_allowed_states() {
+        let rules = shared_rules(Some(&[0]));
+        assert!(!rules.all_state_keys().is_empty());
+        assert!(rules
+            .all_state_keys()
+            .iter()
+            .all(|state_key| ((*state_key >> 16) as u16) == 0));
+    }
+
+    #[test]
+    fn filtered_rules_remove_disallowed_states_from_by_edge() {
+        let disallowed_tile_id = tile_id_by_name("GRASS_SLOPE_LOW");
+        let disallowed_state_key = TileState {
+            tile_id: disallowed_tile_id,
+            rotation: 0,
+            level: 0,
+        }
+        .compact_key();
+
+        let full_rules = shared_rules(None);
+        let filtered_rules = shared_rules(Some(&[0]));
+
+        assert!(full_rules
+            .get_by_edge(crate::tile::EdgeType::Grass, HexDir::W, 0)
+            .unwrap()
+            .contains(&disallowed_state_key));
+        assert!(!filtered_rules
+            .get_by_edge(crate::tile::EdgeType::Grass, HexDir::W, 0)
+            .unwrap()
+            .contains(&disallowed_state_key));
+    }
+
+    #[test]
+    fn filtered_rules_keep_full_state_edges_for_disallowed_states() {
+        let water_state_key = TileState {
+            tile_id: crate::tile::WATER_TILE_ID,
+            rotation: 0,
+            level: 0,
+        }
+        .compact_key();
+
+        let rules = shared_rules(Some(&[0]));
+        assert!(rules.state_edges.contains_key(&water_state_key));
+        assert!(rules.state_weights.get(&water_state_key).is_none());
     }
 
     #[test]
