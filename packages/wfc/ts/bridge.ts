@@ -686,22 +686,18 @@ function splitSinglePassResult(result: PackedSinglePassResult): GridResult[] {
   const groupedCells = new Map<number, CellResult[]>();
   const groupedCollapseOrder = new Map<number, CellResult[]>();
   unpackGridCells(result.cells).forEach((cell) => {
-    const gridIndex = gridIndexForCellCoord(cell.q, cell.r);
-    if (gridIndex === null) {
-      return;
+    for (const gridIndex of gridIndicesForCellCoord(cell.q, cell.r)) {
+      const bucket = groupedCells.get(gridIndex) ?? [];
+      bucket.push(cell);
+      groupedCells.set(gridIndex, bucket);
     }
-    const bucket = groupedCells.get(gridIndex) ?? [];
-    bucket.push(cell);
-    groupedCells.set(gridIndex, bucket);
   });
   unpackGridCells(result.collapse_order).forEach((cell) => {
-    const gridIndex = gridIndexForCellCoord(cell.q, cell.r);
-    if (gridIndex === null) {
-      return;
+    for (const gridIndex of gridIndicesForCellCoord(cell.q, cell.r)) {
+      const bucket = groupedCollapseOrder.get(gridIndex) ?? [];
+      bucket.push(cell);
+      groupedCollapseOrder.set(gridIndex, bucket);
     }
-    const bucket = groupedCollapseOrder.get(gridIndex) ?? [];
-    bucket.push(cell);
-    groupedCollapseOrder.set(gridIndex, bucket);
   });
 
   return ALL_GRID_POSITIONS.map((_, gridIndex) => ({
@@ -912,7 +908,12 @@ function sameCoord(left: CoordResult, right: CoordResult): boolean {
 }
 
 function gridIndexForCellCoord(q: number, r: number): number | null {
+  return gridIndicesForCellCoord(q, r)[0] ?? null;
+}
+
+function gridIndicesForCellCoord(q: number, r: number): number[] {
   const s = -q - r;
+  const matches: number[] = [];
   for (const [index] of ALL_GRID_POSITIONS.entries()) {
     const center = gridIndexToCenter(index);
     const centerQ = center.q;
@@ -920,10 +921,10 @@ function gridIndexForCellCoord(q: number, r: number): number | null {
     const centerS = center.s;
     const distance = (Math.abs(q - centerQ) + Math.abs(r - centerR) + Math.abs(s - centerS)) / 2;
     if (distance <= DEFAULT_CONFIG.gridRadius) {
-      return index;
+      matches.push(index);
     }
   }
-  return null;
+  return matches;
 }
 
 function cubeToWorldX(q: number, r: number): number {
