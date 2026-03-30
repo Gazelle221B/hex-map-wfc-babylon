@@ -61,12 +61,15 @@ export function bucketSinglePassResult(result, grids) {
   const tiles = result.tiles ?? [];
   const collapseOrder = result.collapseOrder ?? result.collapse_order ?? [];
 
-  return descriptors.map((grid) => ({
-    ...grid,
-    tiles: tiles.filter((tile) => grid.cellKeys.has(cubeKey(tile.q, tile.r, tile.s ?? (-tile.q - tile.r)))),
-    collapseOrder: collapseOrder.filter((tile) =>
-      grid.cellKeys.has(cubeKey(tile.q, tile.r, tile.s ?? (-tile.q - tile.r)))),
-  }));
+  return descriptors.map((grid) => {
+    const { cellKeys, ...gridDescriptor } = grid;
+    return {
+      ...gridDescriptor,
+      tiles: tiles.filter((tile) => cellKeys.has(cubeKey(tile.q, tile.r, tile.s ?? (-tile.q - tile.r)))),
+      collapseOrder: collapseOrder.filter((tile) =>
+        cellKeys.has(cubeKey(tile.q, tile.r, tile.s ?? (-tile.q - tile.r)))),
+    };
+  });
 }
 
 function calculateWorldOffset(gridX, gridZ, gridRadius) {
