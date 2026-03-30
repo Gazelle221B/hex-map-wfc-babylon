@@ -50,6 +50,7 @@ type WfcOperationName =
 
 const INIT_TIMEOUT_MS = 30_000;
 const BUILD_RETRY_LIMIT = 1;
+const ALL_GRID_CENTERS = ALL_GRID_POSITIONS.map((_, index) => gridIndexToCenter(index));
 
 export class WfcBridge {
   private worker: Worker | null = null;
@@ -939,8 +940,7 @@ function gridIndexForCellCoord(q: number, r: number): number | null {
 function gridIndicesForCellCoord(q: number, r: number): number[] {
   const s = -q - r;
   const matches: number[] = [];
-  for (const [index] of ALL_GRID_POSITIONS.entries()) {
-    const center = gridIndexToCenter(index);
+  for (const [index, center] of ALL_GRID_CENTERS.entries()) {
     const centerQ = center.q;
     const centerR = center.r;
     const centerS = center.s;
