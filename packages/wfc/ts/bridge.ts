@@ -136,6 +136,7 @@ export class WfcBridge {
   ): Promise<PlacementItem[]> {
     return this.runExclusive("generatePlacements", async () => {
       this.currentSeed = normalizeSeed(seed);
+      const gridCache = new Map<number, GridResult>(grids.map((grid) => [grid.gridIndex, grid]));
       const placements = await Promise.all(
         grids.map(async (grid) => {
           const pos = gridIndexToPosition(grid.gridIndex);
@@ -146,9 +147,13 @@ export class WfcBridge {
             0,
             0,
           );
+          const droppedMountains = grid.droppedCells.flatMap((coord) => {
+            const placement = mountainPlacementForCoord(coord, gridCache);
+            return placement ? [placement] : [];
+          });
           return [
             ...unpackPlacementItems(raw),
-            ...grid.droppedCells.map((coord) => mountainPlacementForCoord(coord, grid)),
+            ...droppedMountains,
           ];
         }),
       );
@@ -761,21 +766,14 @@ function collectDroppedMountains(
   grid: GridResult,
 ): void {
   grid.droppedCells.forEach((coord) => {
-    const sourceGridIndex = gridIndexForCellCoord(coord.q, coord.r);
-    if (sourceGridIndex === null) {
+    const resolved = resolveDroppedSourceCell(cache, coord);
+    if (!resolved) {
       return;
     }
-    const sourceGrid = cache.get(sourceGridIndex);
-    if (!sourceGrid) {
-      return;
-    }
-    const sourceCell = sourceGrid.cells.find((cell) => sameCoord(cell, coord));
-    if (!sourceCell) {
-      return;
-    }
-    const bucket = mountainRows.get(sourceGridIndex) ?? [];
-    bucket.push(9, 0, sourceCell.worldX, sourceCell.worldY + LEVEL_HEIGHT, sourceCell.worldZ, 0);
-    mountainRows.set(sourceGridIndex, bucket);
+    const placement = mountainPlacementForSourceCell(resolved.cell);
+    const bucket = mountainRows.get(resolved.gridIndex) ?? [];
+    bucket.push(9, 0, placement.worldX, placement.worldY, placement.worldZ, placement.rotationY);
+    mountainRows.set(resolved.gridIndex, bucket);
   });
 }
 
@@ -889,15 +887,25 @@ function unpackPlacementItems(items: Float32Array): PlacementItem[] {
   return result;
 }
 
-function mountainPlacementForCoord(coord: CoordResult, grid: GridResult): PlacementItem {
-  const source = grid.cells.find((cell) => sameCoord(cell, coord));
+function mountainPlacementForCoord(
+  coord: CoordResult,
+  cache: ReadonlyMap<number, GridResult>,
+): PlacementItem | null {
+  const resolved = resolveDroppedSourceCell(cache, coord);
+  if (!resolved) {
+    return null;
+  }
+  return mountainPlacementForSourceCell(resolved.cell);
+}
+
+function mountainPlacementForSourceCell(source: CellResult): PlacementItem {
   const spec = resolvePlacementRenderSpec(9, 0);
   return {
     type: spec.type,
     meshId: spec.meshId,
-    worldX: source?.worldX ?? cubeToWorldX(coord.q, coord.r),
-    worldY: (source?.worldY ?? 0) + LEVEL_HEIGHT,
-    worldZ: source?.worldZ ?? cubeToWorldZ(coord.r),
+    worldX: source.worldX,
+    worldY: source.worldY + LEVEL_HEIGHT,
+    worldZ: source.worldZ,
     rotationY: 0,
     scale: spec.scale,
   };
@@ -905,6 +913,25 @@ function mountainPlacementForCoord(coord: CoordResult, grid: GridResult): Placem
 
 function sameCoord(left: CoordResult, right: CoordResult): boolean {
   return left.q === right.q && left.r === right.r && left.s === right.s;
+}
+
+function resolveDroppedSourceCell(
+  cache: ReadonlyMap<number, GridResult>,
+  coord: CoordResult,
+): { gridIndex: number; cell: CellResult } | null {
+  const sourceGridIndex = gridIndexForCellCoord(coord.q, coord.r);
+  if (sourceGridIndex === null) {
+    return null;
+  }
+  const sourceGrid = cache.get(sourceGridIndex);
+  if (!sourceGrid) {
+    return null;
+  }
+  const sourceCell = sourceGrid.cells.find((cell) => sameCoord(cell, coord));
+  if (!sourceCell) {
+    return null;
+  }
+  return { gridIndex: sourceGridIndex, cell: sourceCell };
 }
 
 function gridIndexForCellCoord(q: number, r: number): number | null {
@@ -925,15 +952,6 @@ function gridIndicesForCellCoord(q: number, r: number): number[] {
     }
   }
   return matches;
-}
-
-function cubeToWorldX(q: number, r: number): number {
-  const size = HEX_WIDTH / 2;
-  return size * (Math.sqrt(3) * q + (Math.sqrt(3) / 2) * r);
-}
-
-function cubeToWorldZ(r: number): number {
-  return (HEX_WIDTH / 2) * (3 / 2) * r;
 }
 
 function normalizeSeed(seed: number): number {
