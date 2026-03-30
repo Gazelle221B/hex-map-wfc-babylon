@@ -1,6 +1,7 @@
 import type {
   BuildSummary,
   CellResult,
+  CoordResult,
   GridResult,
   PackedGridChunk,
   PackedPlacementChunk,
@@ -8,8 +9,10 @@ import type {
   WfcEvents,
 } from "@hex/types";
 import {
+  DEFAULT_CONFIG,
   HEX_WIDTH,
   LEVEL_HEIGHT,
+  PACKED_COORD_STRIDE,
   PACKED_GRID_STRIDE,
   PACKED_PLACEMENT_STRIDE,
   resolvePlacementRenderSpec,
@@ -17,12 +20,19 @@ import {
 import { WfcBridgeError, WfcSeedError } from "./errors.js";
 import {
   WFC_PROTOCOL_VERSION,
+  type PackedSinglePassResult,
   type PackedSolveResult,
+  type WfcMode,
   type WorkerFatalPhase,
   type WorkerRequest,
   type WorkerResponse,
 } from "./types.js";
-import { ALL_GRID_POSITIONS, gridIndexToPosition, gridPositionToIndex } from "./grid-positions.js";
+import {
+  ALL_GRID_POSITIONS,
+  gridIndexToCenter,
+  gridIndexToPosition,
+  gridPositionToIndex,
+} from "./grid-positions.js";
 
 type PendingResolve<T> = {
   resolve: (value: T) => void;
@@ -31,19 +41,17 @@ type PendingResolve<T> = {
 
 type WfcOperationName =
   | "solveGrid"
-  | "solveAll"
+  | "solveAllProgressively"
+  | "solveAllSinglePass"
   | "generatePlacements"
   | "buildAllProgressively"
+  | "buildAllSinglePass"
   | "reset";
 
 const INIT_TIMEOUT_MS = 30_000;
 const BUILD_RETRY_LIMIT = 1;
-const RESTART_PROGRESS_GRID_INDEX = 0;
+const ALL_GRID_CENTERS = ALL_GRID_POSITIONS.map((_, index) => gridIndexToCenter(index));
 
-/**
- * Bridge between the main thread and the WFC WASM worker.
- * Provides a Promise-based API for grid solving and placement generation.
- */
 export class WfcBridge {
   private worker: Worker | null = null;
   private pending = new Map<string, PendingResolve<unknown>>();
@@ -63,63 +71,89 @@ export class WfcBridge {
     this.spawnWorker();
   }
 
-  /** Wait for the current worker generation to initialize. */
   async ready(): Promise<void> {
     await this.ensureWorkerReady();
   }
 
-  /** Solve a single grid at the given hex-of-hex position. */
   async solveGrid(
     gridQ: number,
     gridR: number,
-    tileTypes?: number[],
+    options: { tileTypes?: number[]; mode?: WfcMode } = {},
   ): Promise<GridResult> {
     return this.runExclusive("solveGrid", async () => {
+      const mode = options.mode ?? "legacy-compat";
       const gridIndex = gridPositionToIndex(gridQ, gridR);
       const raw = await this.solveGridRaw(
         gridQ,
         gridR,
-        this.seedForGrid(gridIndex),
-        tileTypes,
+        this.seedForGrid(gridIndex, this.currentSeed, mode),
+        mode,
+        options.tileTypes,
       );
       return normalizeGridResult(raw, gridIndex);
     });
   }
 
-  /** Solve all 19 grids. */
-  async solveAll(seed: number): Promise<GridResult[]> {
-    return this.runExclusive("solveAll", async () => {
+  async solveAll(seed: number, mode: WfcMode = "legacy-compat"): Promise<GridResult[]> {
+    return this.solveAllProgressively(seed, mode);
+  }
+
+  async solveAllProgressively(seed: number, mode: WfcMode = "legacy-compat"): Promise<GridResult[]> {
+    return this.runExclusive("solveAllProgressively", async () => {
       this.currentSeed = normalizeSeed(seed);
       this.postResetUnsafe();
-      const results: GridResult[] = [];
+      const cache = new Map<number, GridResult>();
       for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
-        this.assertNotDisposed();
-        const raw = await this.solveGridRaw(pos.q, pos.r, this.seedForGrid(gridIndex, seed));
-        results.push(normalizeGridResult(raw, gridIndex));
+        const raw = await this.solveGridRaw(
+          pos.q,
+          pos.r,
+          this.seedForGrid(gridIndex, seed, mode),
+          mode,
+        );
+        const normalized = normalizeGridResult(raw, gridIndex);
+        const impacted = applyGridMetadata(cache, normalized);
+        for (const grid of impacted) {
+          this.emitGridSolved(toPackedGridChunk(grid));
+        }
       }
-      return results;
+      return [...cache.values()].sort((a, b) => a.gridIndex - b.gridIndex);
     });
   }
 
-  /** Generate placements for a solved set of grids. */
+  async solveAllSinglePass(seed: number, mode: WfcMode = "legacy-compat"): Promise<GridResult[]> {
+    return this.runExclusive("solveAllSinglePass", async () => {
+      this.currentSeed = normalizeSeed(seed);
+      this.postResetUnsafe();
+      const raw = await this.solveAllSinglePassRaw(seed, mode);
+      return splitSinglePassResult(raw);
+    });
+  }
+
   async generatePlacements(
     grids: readonly GridResult[],
     seed: number,
   ): Promise<PlacementItem[]> {
     return this.runExclusive("generatePlacements", async () => {
       this.currentSeed = normalizeSeed(seed);
+      const gridCache = new Map<number, GridResult>(grids.map((grid) => [grid.gridIndex, grid]));
       const placements = await Promise.all(
         grids.map(async (grid) => {
-          this.assertNotDisposed();
           const pos = gridIndexToPosition(grid.gridIndex);
           const raw = await this.generatePlacementsPackedRaw(
             pos.q,
             pos.r,
-            this.seedForGrid(grid.gridIndex, seed),
+            this.seedForGrid(grid.gridIndex, seed, "modern-fast"),
             0,
             0,
           );
-          return unpackPlacementItems(raw);
+          const droppedMountains = grid.droppedCells.flatMap((coord) => {
+            const placement = mountainPlacementForCoord(coord, gridCache);
+            return placement ? [placement] : [];
+          });
+          return [
+            ...unpackPlacementItems(raw),
+            ...droppedMountains,
+          ];
         }),
       );
       return placements.flat();
@@ -133,39 +167,33 @@ export class WfcBridge {
     };
   }
 
-  async buildAllProgressively(seed: number): Promise<BuildSummary> {
+  async buildAllProgressively(seed: number, mode: WfcMode = "legacy-compat"): Promise<BuildSummary> {
     return this.runExclusive("buildAllProgressively", async () => {
       this.currentSeed = normalizeSeed(seed);
-
       for (let attempt = 0; attempt <= BUILD_RETRY_LIMIT; attempt += 1) {
-        this.assertNotDisposed();
-
         try {
-          return await this.buildAllProgressivelyOnce(seed);
+          return await this.buildAllProgressivelyOnce(seed, mode);
         } catch (error) {
-          if (!this.shouldRetryProgressiveBuild(error, attempt)) {
+          if (!this.shouldRetryBuild(error, attempt)) {
             throw error;
           }
-
           this.emitError({
             message: `Restarting progressive build after worker failure: ${error.message}`,
             recoverable: true,
           });
-          this.emitProgress({
-            phase: "solving",
-            completed: 0,
-            total: ALL_GRID_POSITIONS.length,
-            gridIndex: RESTART_PROGRESS_GRID_INDEX,
-            fallbackCount: 0,
-          });
         }
       }
-
-      throw new Error("unreachable progressive build retry state");
+      throw new Error("unreachable build retry state");
     });
   }
 
-  /** Reset the engine state. */
+  async buildAllSinglePass(seed: number, mode: WfcMode = "legacy-compat"): Promise<BuildSummary> {
+    return this.runExclusive("buildAllSinglePass", async () => {
+      this.currentSeed = normalizeSeed(seed);
+      return this.buildAllSinglePassOnce(seed, mode);
+    });
+  }
+
   reset(): void {
     if (this.disposed) {
       return;
@@ -177,23 +205,19 @@ export class WfcBridge {
     this.postResetUnsafe();
   }
 
-  /** Terminate the worker. */
   dispose(): void {
     if (this.disposed) {
       return;
     }
-
     this.disposed = true;
     this.failCurrentWorker(this.createDisposedError());
   }
 
-  private seedForGrid(gridIndex: number, baseSeed = this.currentSeed): number {
+  private seedForGrid(gridIndex: number, baseSeed: number, mode: WfcMode): number {
     const normalizedSeed = normalizeSeed(baseSeed);
-    const nextSeed = normalizedSeed + gridIndex;
+    const nextSeed = mode === "legacy-compat" ? normalizedSeed : normalizedSeed + gridIndex;
     if (!Number.isSafeInteger(nextSeed)) {
-      throw new WfcSeedError(
-        `Seed ${normalizedSeed} is too large to derive a worker-safe grid seed.`,
-      );
+      throw new WfcSeedError(`Seed ${normalizedSeed} is too large to derive a worker-safe grid seed.`);
     }
     return nextSeed;
   }
@@ -214,13 +238,9 @@ export class WfcBridge {
     }
   }
 
-  private async runExclusive<T>(
-    operationName: WfcOperationName,
-    fn: () => Promise<T>,
-  ): Promise<T> {
+  private async runExclusive<T>(operationName: WfcOperationName, fn: () => Promise<T>): Promise<T> {
     this.assertIdle(operationName);
     this.activeOperation = operationName;
-
     try {
       return await fn();
     } finally {
@@ -232,6 +252,7 @@ export class WfcBridge {
     gridQ: number,
     gridR: number,
     seed: number,
+    wfcMode: WfcMode,
     tileTypes?: number[],
   ): Promise<PackedSolveResult> {
     const id = this.genId();
@@ -243,7 +264,16 @@ export class WfcBridge {
         gridR,
         seed,
         tileTypes,
+        wfcMode,
       },
+      id,
+    );
+  }
+
+  private async solveAllSinglePassRaw(seed: number, wfcMode: WfcMode): Promise<PackedSinglePassResult> {
+    const id = this.genId();
+    return this.request<PackedSinglePassResult>(
+      { type: "solveAllSinglePass", id, seed, wfcMode },
       id,
     );
   }
@@ -257,27 +287,18 @@ export class WfcBridge {
   ): Promise<Float32Array> {
     const id = this.genId();
     return this.request<Float32Array>(
-      {
-        type: "placements",
-        id,
-        gridQ,
-        gridR,
-        seed,
-        offsetX,
-        offsetZ,
-      },
+      { type: "placements", id, gridQ, gridR, seed, offsetX, offsetZ },
       id,
     );
   }
 
-  private async request<T>(msg: WorkerRequest, id: string): Promise<T> {
+  private async request<T>(message: WorkerRequest, id: string): Promise<T> {
     await this.ensureWorkerReady();
     const worker = this.requireWorker("runtime");
-
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
       try {
-        worker.postMessage(msg);
+        worker.postMessage(message);
       } catch (error) {
         this.pending.delete(id);
         const details = error instanceof Error ? error.message : String(error);
@@ -309,7 +330,6 @@ export class WfcBridge {
     if (this.worker) {
       return;
     }
-
     this.resetReadyPromise();
     const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
     this.worker = worker;
@@ -317,19 +337,7 @@ export class WfcBridge {
     worker.addEventListener("error", this.onWorkerError);
     worker.addEventListener("messageerror", this.onWorkerMessageError);
     this.startInitWatchdog(worker);
-
-    try {
-      worker.postMessage({ type: "init", protocolVersion: WFC_PROTOCOL_VERSION });
-    } catch (error) {
-      const details = error instanceof Error ? error.message : String(error);
-      const bridgeError = new WfcBridgeError(
-        "fatal",
-        `Failed to post a message to the WFC worker: ${details}`,
-        { phase: "init" },
-      );
-      this.failCurrentWorker(bridgeError);
-      throw bridgeError;
-    }
+    worker.postMessage({ type: "init", protocolVersion: WFC_PROTOCOL_VERSION });
   }
 
   private startInitWatchdog(worker: Worker): void {
@@ -338,7 +346,6 @@ export class WfcBridge {
       if (this.disposed || this.worker !== worker || this.readySettled) {
         return;
       }
-
       this.failCurrentWorker(
         new WfcBridgeError(
           "fatal",
@@ -353,7 +360,6 @@ export class WfcBridge {
     if (this.initWatchdog === null) {
       return;
     }
-
     clearTimeout(this.initWatchdog);
     this.initWatchdog = null;
   }
@@ -376,11 +382,7 @@ export class WfcBridge {
   private requireWorker(phase: WorkerFatalPhase): Worker {
     this.assertNotDisposed();
     if (!this.worker) {
-      throw new WfcBridgeError(
-        "fatal",
-        "The WFC worker is no longer available.",
-        { phase },
-      );
+      throw new WfcBridgeError("fatal", "The WFC worker is no longer available.", { phase });
     }
     return this.worker;
   }
@@ -394,88 +396,89 @@ export class WfcBridge {
     if (!worker) {
       return;
     }
-
-    try {
-      worker.postMessage({ type: "reset" });
-    } catch (error) {
-      const details = error instanceof Error ? error.message : String(error);
-      this.failCurrentWorker(
-        new WfcBridgeError(
-          "fatal",
-          `Failed to post a message to the WFC worker: ${details}`,
-          { phase: "runtime" },
-        ),
-      );
-    }
+    worker.postMessage({ type: "reset" });
   }
 
-  private shouldRetryProgressiveBuild(error: unknown, attempt: number): error is WfcBridgeError {
-    if (attempt >= BUILD_RETRY_LIMIT || this.disposed) {
-      return false;
-    }
-
-    return error instanceof WfcBridgeError && error.kind === "fatal";
+  private shouldRetryBuild(error: unknown, attempt: number): error is WfcBridgeError {
+    return attempt < BUILD_RETRY_LIMIT && error instanceof WfcBridgeError && error.kind === "fatal";
   }
 
-  private async buildAllProgressivelyOnce(seed: number): Promise<BuildSummary> {
+  private async buildAllProgressivelyOnce(seed: number, mode: WfcMode): Promise<BuildSummary> {
+    this.postResetUnsafe();
     const total = ALL_GRID_POSITIONS.length;
+    const cache = new Map<number, GridResult>();
+    const mountainRows = new Map<number, number[]>();
     let solvedCount = 0;
     let fallbackCount = 0;
-
-    this.postResetUnsafe();
+    let failedCount = 0;
 
     for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
-      this.assertNotDisposed();
       const raw = await this.solveGridRaw(
         pos.q,
         pos.r,
-        this.seedForGrid(gridIndex, seed),
+        this.seedForGrid(gridIndex, seed, mode),
+        mode,
       );
-      const chunk: PackedGridChunk = {
-        gridIndex,
-        status: raw.status,
-        cells: raw.cells,
-      };
-
-      if (raw.status === "fallback_water") {
-        fallbackCount += 1;
-        this.emitError({
-          message:
-            `Grid ${gridIndex} fell back to water ` +
-            `[tries=${raw.tries}, backtracks=${raw.backtracks}, dropped_count=${raw.dropped_count}, local_wfc_attempts=${raw.local_wfc_attempts}]`,
-          gridIndex,
-          recoverable: true,
-        });
-      } else {
-        solvedCount += 1;
+      const normalized = normalizeGridResult(raw, gridIndex);
+      const impacted = applyGridMetadata(cache, normalized);
+      collectDroppedMountains(mountainRows, cache, normalized);
+      const current = cache.get(gridIndex)!;
+      switch (current.status) {
+        case "solved":
+          solvedCount += 1;
+          break;
+        case "fallback_water":
+          fallbackCount += 1;
+          this.emitError({
+            message:
+              `Grid ${gridIndex} fell back to water ` +
+              `[tries=${current.stats.tries}, backtracks=${current.stats.backtracks}, dropped_count=${current.stats.droppedCount}, local_wfc_attempts=${current.stats.localWfcAttempts}]`,
+            gridIndex,
+            recoverable: true,
+          });
+          break;
+        case "failed":
+          failedCount += 1;
+          this.emitError({
+            message:
+              `Grid ${gridIndex} failed ` +
+              `[tries=${current.stats.tries}, backtracks=${current.stats.backtracks}, dropped_count=${current.stats.droppedCount}, local_wfc_attempts=${current.stats.localWfcAttempts}]`,
+            gridIndex,
+            recoverable: true,
+          });
+          break;
       }
 
-      this.emitGridSolved(chunk);
+      for (const grid of impacted) {
+        this.emitGridSolved(toPackedGridChunk(grid));
+      }
       this.emitProgress({
         phase: "solving",
         completed: gridIndex + 1,
         total,
         gridIndex,
         fallbackCount,
+        failedCount,
       });
     }
 
     for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
-      this.assertNotDisposed();
-      const items = await this.generatePlacementsPackedRaw(
+      const raw = await this.generatePlacementsPackedRaw(
         pos.q,
         pos.r,
-        this.seedForGrid(gridIndex, seed),
+        this.seedForGrid(gridIndex, seed, "modern-fast"),
         0,
         0,
       );
-      this.emitPlacementsGenerated({ gridIndex, items });
+      const merged = mergePlacementBuffers(raw, mountainRows.get(gridIndex));
+      this.emitPlacementsGenerated({ gridIndex, items: merged });
       this.emitProgress({
         phase: "placements",
         completed: gridIndex + 1,
         total,
         gridIndex,
         fallbackCount,
+        failedCount,
       });
     }
 
@@ -483,43 +486,100 @@ export class WfcBridge {
       totalGrids: total,
       solvedCount,
       fallbackCount,
+      failedCount,
+    };
+    this.emitAllSolved(summary);
+    return summary;
+  }
+
+  private async buildAllSinglePassOnce(seed: number, mode: WfcMode): Promise<BuildSummary> {
+    this.postResetUnsafe();
+    const total = ALL_GRID_POSITIONS.length;
+    const raw = await this.solveAllSinglePassRaw(seed, mode);
+    const grids = splitSinglePassResult(raw);
+    const mountainRows = new Map<number, number[]>();
+    let solvedCount = 0;
+    let fallbackCount = 0;
+    let failedCount = 0;
+
+    grids.forEach((grid, index) => {
+      if (grid.status === "solved") {
+        solvedCount += 1;
+      } else if (grid.status === "fallback_water") {
+        fallbackCount += 1;
+      } else {
+        failedCount += 1;
+      }
+      collectDroppedMountains(mountainRows, new Map([[grid.gridIndex, grid]]), grid);
+      this.emitGridSolved(toPackedGridChunk(grid));
+      this.emitProgress({
+        phase: "solving",
+        completed: index + 1,
+        total,
+        gridIndex: grid.gridIndex,
+        fallbackCount,
+        failedCount,
+      });
+    });
+
+    for (const grid of grids) {
+      const pos = gridIndexToPosition(grid.gridIndex);
+      const rawPlacements = await this.generatePlacementsPackedRaw(
+        pos.q,
+        pos.r,
+        this.seedForGrid(grid.gridIndex, seed, "modern-fast"),
+        0,
+        0,
+      );
+      this.emitPlacementsGenerated({
+        gridIndex: grid.gridIndex,
+        items: mergePlacementBuffers(rawPlacements, mountainRows.get(grid.gridIndex)),
+      });
+      this.emitProgress({
+        phase: "placements",
+        completed: grid.gridIndex + 1,
+        total,
+        gridIndex: grid.gridIndex,
+        fallbackCount,
+        failedCount,
+      });
+    }
+
+    const summary: BuildSummary = {
+      totalGrids: total,
+      solvedCount,
+      fallbackCount,
+      failedCount,
     };
     this.emitAllSolved(summary);
     return summary;
   }
 
   private onMessage = (event: MessageEvent<WorkerResponse>): void => {
-    const msg = event.data;
-
-    switch (msg.type) {
+    const message = event.data;
+    switch (message.type) {
       case "ready":
         this.clearInitWatchdog();
         this.resolveReadyOnce();
         break;
-      case "result": {
-        const p = this.pending.get(msg.id);
-        if (p) {
-          this.pending.delete(msg.id);
-          p.resolve(msg.data);
-        }
-        break;
-      }
+      case "result":
+      case "singlePassResult":
       case "placements": {
-        const p = this.pending.get(msg.id);
-        if (p) {
-          this.pending.delete(msg.id);
-          p.resolve(msg.data);
+        const pending = this.pending.get(message.id);
+        if (pending) {
+          this.pending.delete(message.id);
+          pending.resolve(message.data);
         }
         break;
       }
       case "fatal":
-        this.handleFatal(msg.phase, msg.message);
+        this.handleFatal(message.phase, message.message);
         break;
       case "error": {
-        const p = this.pending.get(msg.id);
-        if (p) {
-          this.pending.delete(msg.id);
-          p.reject(new Error(msg.message));
+        const pending = this.pending.get(message.id);
+        if (pending) {
+          this.pending.delete(message.id);
+          pending.reject(new WfcBridgeError("request", message.message));
         }
         break;
       }
@@ -527,25 +587,37 @@ export class WfcBridge {
   };
 
   private onWorkerError = (event: ErrorEvent): void => {
-    this.handleFatal(
-      "runtime",
-      event.message || "The WFC worker encountered an unhandled error.",
-    );
+    this.handleFatal("runtime", event.message || "The WFC worker encountered an unhandled error.");
   };
 
   private onWorkerMessageError = (): void => {
-    this.handleFatal(
-      "runtime",
-      "The WFC worker sent a message that could not be deserialized.",
-    );
+    this.handleFatal("runtime", "The WFC worker produced an unreadable message.");
   };
 
   private handleFatal(phase: WorkerFatalPhase, message: string): void {
-    if (this.disposed) {
+    this.failCurrentWorker(new WfcBridgeError("fatal", message, { phase }));
+  }
+
+  private detachWorker(terminate: boolean): void {
+    const worker = this.worker;
+    if (!worker) {
       return;
     }
+    this.worker = null;
+    worker.removeEventListener("message", this.onMessage);
+    worker.removeEventListener("error", this.onWorkerError);
+    worker.removeEventListener("messageerror", this.onWorkerMessageError);
+    if (terminate) {
+      worker.terminate();
+    }
+  }
 
-    this.failCurrentWorker(new WfcBridgeError("fatal", message, { phase }));
+  private rejectReadyOnce(reason: Error): void {
+    if (this.readySettled) {
+      return;
+    }
+    this.readySettled = true;
+    this.rejectReady(reason);
   }
 
   private resolveReadyOnce(): void {
@@ -556,63 +628,40 @@ export class WfcBridge {
     this.resolveReady();
   }
 
-  private rejectReadyOnce(error: Error): void {
-    if (this.readySettled) {
-      return;
-    }
-    this.readySettled = true;
-    this.rejectReady(error);
-  }
-
-  private rejectPending(error: Error): void {
-    for (const { reject } of this.pending.values()) {
-      reject(error);
+  private rejectPending(reason: Error): void {
+    for (const pending of this.pending.values()) {
+      pending.reject(reason);
     }
     this.pending.clear();
   }
 
-  private detachWorker(terminate: boolean): void {
-    this.clearInitWatchdog();
-    if (!this.worker) {
-      return;
-    }
-
-    this.worker.removeEventListener("message", this.onMessage);
-    this.worker.removeEventListener("error", this.onWorkerError);
-    this.worker.removeEventListener("messageerror", this.onWorkerMessageError);
-    if (terminate) {
-      this.worker.terminate();
-    }
-    this.worker = null;
-  }
-
   private emitGridSolved(chunk: PackedGridChunk): void {
-    for (const events of this.subscriptions) {
-      events.onGridSolved?.(chunk);
+    for (const subscriber of this.subscriptions) {
+      subscriber.onGridSolved?.(chunk);
     }
   }
 
   private emitPlacementsGenerated(chunk: PackedPlacementChunk): void {
-    for (const events of this.subscriptions) {
-      events.onPlacementsGenerated?.(chunk);
+    for (const subscriber of this.subscriptions) {
+      subscriber.onPlacementsGenerated?.(chunk);
     }
   }
 
   private emitProgress(progress: Parameters<NonNullable<WfcEvents["onProgress"]>>[0]): void {
-    for (const events of this.subscriptions) {
-      events.onProgress?.(progress);
+    for (const subscriber of this.subscriptions) {
+      subscriber.onProgress?.(progress);
     }
   }
 
   private emitError(error: Parameters<NonNullable<WfcEvents["onError"]>>[0]): void {
-    for (const events of this.subscriptions) {
-      events.onError?.(error);
+    for (const subscriber of this.subscriptions) {
+      subscriber.onError?.(error);
     }
   }
 
   private emitAllSolved(summary: BuildSummary): void {
-    for (const events of this.subscriptions) {
-      events.onAllSolved?.(summary);
+    for (const subscriber of this.subscriptions) {
+      subscriber.onAllSolved?.(summary);
     }
   }
 }
@@ -620,8 +669,160 @@ export class WfcBridge {
 function normalizeGridResult(result: PackedSolveResult, gridIndex: number): GridResult {
   return {
     gridIndex,
+    status: result.status,
     cells: unpackGridCells(result.cells),
+    collapseOrder: unpackGridCells(result.collapse_order),
+    changedFixedCells: unpackGridCells(result.changed_fixed_cells),
+    unfixedCells: unpackCoords(result.unfixed_cells),
+    droppedCells: unpackCoords(result.dropped_cells),
+    lastConflict: result.last_conflict,
+    neighborConflict: result.neighbor_conflict,
+    stats: {
+      backtracks: result.backtracks,
+      tries: result.tries,
+      localWfcAttempts: result.local_wfc_attempts,
+      droppedCount: result.dropped_count,
+    },
   };
+}
+
+function splitSinglePassResult(result: PackedSinglePassResult): GridResult[] {
+  const groupedCells = new Map<number, CellResult[]>();
+  const groupedCollapseOrder = new Map<number, CellResult[]>();
+  unpackGridCells(result.cells).forEach((cell) => {
+    for (const gridIndex of gridIndicesForCellCoord(cell.q, cell.r)) {
+      const bucket = groupedCells.get(gridIndex) ?? [];
+      bucket.push(cell);
+      groupedCells.set(gridIndex, bucket);
+    }
+  });
+  unpackGridCells(result.collapse_order).forEach((cell) => {
+    for (const gridIndex of gridIndicesForCellCoord(cell.q, cell.r)) {
+      const bucket = groupedCollapseOrder.get(gridIndex) ?? [];
+      bucket.push(cell);
+      groupedCollapseOrder.set(gridIndex, bucket);
+    }
+  });
+
+  return ALL_GRID_POSITIONS.map((_, gridIndex) => ({
+    gridIndex,
+    status: groupedCells.has(gridIndex) ? result.status : (result.status === "failed" ? "failed" : "solved"),
+    cells: groupedCells.get(gridIndex) ?? [],
+    collapseOrder: groupedCollapseOrder.get(gridIndex) ?? [],
+    changedFixedCells: [],
+    unfixedCells: [],
+    droppedCells: [],
+    lastConflict: result.last_conflict,
+    neighborConflict: result.neighbor_conflict,
+    stats: {
+      backtracks: result.backtracks,
+      tries: result.tries,
+      localWfcAttempts: 0,
+      droppedCount: 0,
+    },
+  }));
+}
+
+function applyGridMetadata(cache: Map<number, GridResult>, next: GridResult): GridResult[] {
+  const currentGrid: GridResult = {
+    ...next,
+    cells: next.cells.filter((cell) => !next.unfixedCells.some((coord) => sameCoord(coord, cell))),
+  };
+  cache.set(currentGrid.gridIndex, currentGrid);
+  const impacted = new Map<number, GridResult>([[currentGrid.gridIndex, currentGrid]]);
+
+  for (const changedCell of next.changedFixedCells) {
+    const sourceGridIndex = gridIndexForCellCoord(changedCell.q, changedCell.r);
+    if (sourceGridIndex === null) {
+      continue;
+    }
+    const existing = cache.get(sourceGridIndex);
+    if (!existing) {
+      continue;
+    }
+    const patchedCells = existing.cells.map((cell) =>
+      sameCoord(cell, changedCell)
+        ? {
+            ...cell,
+            tileId: changedCell.tileId,
+            rotation: changedCell.rotation,
+            elevation: changedCell.elevation,
+            worldY: changedCell.worldY,
+          }
+        : cell,
+    );
+    const patched = { ...existing, cells: patchedCells };
+    cache.set(sourceGridIndex, patched);
+    impacted.set(sourceGridIndex, patched);
+  }
+
+  return [...impacted.values()].sort((left, right) => left.gridIndex - right.gridIndex);
+}
+
+function collectDroppedMountains(
+  mountainRows: Map<number, number[]>,
+  cache: Map<number, GridResult>,
+  grid: GridResult,
+): void {
+  grid.droppedCells.forEach((coord) => {
+    const resolved = resolveDroppedSourceCell(cache, coord);
+    if (!resolved) {
+      return;
+    }
+    const placement = mountainPlacementForSourceCell(resolved.cell);
+    const bucket = mountainRows.get(resolved.gridIndex) ?? [];
+    bucket.push(9, 0, placement.worldX, placement.worldY, placement.worldZ, placement.rotationY);
+    mountainRows.set(resolved.gridIndex, bucket);
+  });
+}
+
+function toPackedGridChunk(grid: GridResult): PackedGridChunk {
+  return {
+    gridIndex: grid.gridIndex,
+    status: grid.status,
+    cells: packGridCells(grid.cells),
+    collapseOrder: packGridCells(grid.collapseOrder),
+    changedFixedCells: packGridCells(grid.changedFixedCells),
+    unfixedCells: packCoords(grid.unfixedCells),
+    droppedCells: packCoords(grid.droppedCells),
+    lastConflict: grid.lastConflict,
+    neighborConflict: grid.neighborConflict,
+    stats: grid.stats,
+  };
+}
+
+function packGridCells(cells: readonly CellResult[]): Int32Array {
+  const packed = new Int32Array(cells.length * PACKED_GRID_STRIDE);
+  cells.forEach((cell, index) => {
+    const offset = index * PACKED_GRID_STRIDE;
+    packed[offset] = cell.q;
+    packed[offset + 1] = cell.r;
+    packed[offset + 2] = cell.tileId;
+    packed[offset + 3] = cell.rotation;
+    packed[offset + 4] = cell.elevation;
+  });
+  return packed;
+}
+
+function packCoords(coords: readonly CoordResult[]): Int32Array {
+  const packed = new Int32Array(coords.length * PACKED_COORD_STRIDE);
+  coords.forEach((coord, index) => {
+    const offset = index * PACKED_COORD_STRIDE;
+    packed[offset] = coord.q;
+    packed[offset + 1] = coord.r;
+    packed[offset + 2] = coord.s;
+  });
+  return packed;
+}
+
+function mergePlacementBuffers(base: Float32Array, extras?: readonly number[]): Float32Array {
+  if (!extras || extras.length === 0) {
+    return base;
+  }
+  const merged = new Float32Array(base.length + extras.length);
+  merged.set(base, 0);
+  merged.set(extras, base.length);
+  return merged;
 }
 
 function unpackGridCells(cells: Int32Array): CellResult[] {
@@ -637,29 +838,37 @@ function unpackGridCells(cells: Int32Array): CellResult[] {
     const r = cells[index + 1];
     const tileId = cells[index + 2];
     const rotation = cells[index + 3];
-    const level = cells[index + 4];
-    const worldX = sizeTimesSqrt3 * q + sizeTimesSqrt3Over2 * r;
-    const worldZ = sizeTimesThreeOver2 * r;
-
+    const elevation = cells[index + 4];
     result.push({
       q,
       r,
       s: -q - r,
       tileId,
       rotation,
-      elevation: level,
-      worldX,
-      worldY: level * LEVEL_HEIGHT,
-      worldZ,
+      elevation,
+      worldX: sizeTimesSqrt3 * q + sizeTimesSqrt3Over2 * r,
+      worldY: elevation * LEVEL_HEIGHT,
+      worldZ: sizeTimesThreeOver2 * r,
     });
   }
 
   return result;
 }
 
+function unpackCoords(coords: Int32Array): CoordResult[] {
+  const result: CoordResult[] = [];
+  for (let index = 0; index < coords.length; index += PACKED_COORD_STRIDE) {
+    result.push({
+      q: coords[index],
+      r: coords[index + 1],
+      s: coords[index + 2],
+    });
+  }
+  return result;
+}
+
 function unpackPlacementItems(items: Float32Array): PlacementItem[] {
   const result: PlacementItem[] = [];
-
   for (let index = 0; index < items.length; index += PACKED_PLACEMENT_STRIDE) {
     const placementType = Math.round(items[index]);
     const tier = Math.round(items[index + 1]);
@@ -674,16 +883,78 @@ function unpackPlacementItems(items: Float32Array): PlacementItem[] {
       scale: spec.scale,
     });
   }
-
   return result;
+}
+
+function mountainPlacementForCoord(
+  coord: CoordResult,
+  cache: ReadonlyMap<number, GridResult>,
+): PlacementItem | null {
+  const resolved = resolveDroppedSourceCell(cache, coord);
+  if (!resolved) {
+    return null;
+  }
+  return mountainPlacementForSourceCell(resolved.cell);
+}
+
+function mountainPlacementForSourceCell(source: CellResult): PlacementItem {
+  const spec = resolvePlacementRenderSpec(9, 0);
+  return {
+    type: spec.type,
+    meshId: spec.meshId,
+    worldX: source.worldX,
+    worldY: source.worldY + LEVEL_HEIGHT,
+    worldZ: source.worldZ,
+    rotationY: 0,
+    scale: spec.scale,
+  };
+}
+
+function sameCoord(left: CoordResult, right: CoordResult): boolean {
+  return left.q === right.q && left.r === right.r && left.s === right.s;
+}
+
+function resolveDroppedSourceCell(
+  cache: ReadonlyMap<number, GridResult>,
+  coord: CoordResult,
+): { gridIndex: number; cell: CellResult } | null {
+  const sourceGridIndex = gridIndexForCellCoord(coord.q, coord.r);
+  if (sourceGridIndex === null) {
+    return null;
+  }
+  const sourceGrid = cache.get(sourceGridIndex);
+  if (!sourceGrid) {
+    return null;
+  }
+  const sourceCell = sourceGrid.cells.find((cell) => sameCoord(cell, coord));
+  if (!sourceCell) {
+    return null;
+  }
+  return { gridIndex: sourceGridIndex, cell: sourceCell };
+}
+
+function gridIndexForCellCoord(q: number, r: number): number | null {
+  return gridIndicesForCellCoord(q, r)[0] ?? null;
+}
+
+function gridIndicesForCellCoord(q: number, r: number): number[] {
+  const s = -q - r;
+  const matches: number[] = [];
+  for (const [index, center] of ALL_GRID_CENTERS.entries()) {
+    const centerQ = center.q;
+    const centerR = center.r;
+    const centerS = center.s;
+    const distance = (Math.abs(q - centerQ) + Math.abs(r - centerR) + Math.abs(s - centerS)) / 2;
+    if (distance <= DEFAULT_CONFIG.gridRadius) {
+      matches.push(index);
+    }
+  }
+  return matches;
 }
 
 function normalizeSeed(seed: number): number {
   if (!Number.isFinite(seed) || !Number.isInteger(seed) || seed < 0 || !Number.isSafeInteger(seed)) {
-    throw new WfcSeedError(
-      `Seed must be a finite, non-negative safe integer. Received: ${seed}.`,
-    );
+    throw new WfcSeedError(`Seed must be a finite, non-negative safe integer. Received: ${seed}.`);
   }
-
   return seed;
 }

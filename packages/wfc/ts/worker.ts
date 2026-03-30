@@ -1,6 +1,7 @@
 import init, { WfcEngine } from "../wasm/wfc_core.js";
 import {
   WFC_PROTOCOL_VERSION,
+  type PackedSinglePassResult,
   type PackedSolveResult,
   type WorkerFatalPhase,
   type WorkerRequest,
@@ -13,8 +14,8 @@ type TransferPostingScope = {
   postMessage(message: WorkerResponse, transfer: Transferable[]): void;
 };
 
-function post(msg: WorkerResponse, transfer: Transferable[] = []): void {
-  (self as unknown as TransferPostingScope).postMessage(msg, transfer);
+function post(message: WorkerResponse, transfer: Transferable[] = []): void {
+  (self as unknown as TransferPostingScope).postMessage(message, transfer);
 }
 
 function postFatal(phase: WorkerFatalPhase, message: string): void {
@@ -27,14 +28,10 @@ function errorMessage(error: unknown): string {
 
 async function initialize(): Promise<void> {
   const previousEngine = engine;
-
   try {
-    // In a worker, import.meta.url resolves to the worker script URL.
-    // The WASM binary is co-located with the JS glue.
     await init();
-    const nextEngine = new WfcEngine();
+    engine = new WfcEngine();
     previousEngine?.free();
-    engine = nextEngine;
     post({ type: "ready" });
   } catch (error) {
     previousEngine?.free();
@@ -43,12 +40,13 @@ async function initialize(): Promise<void> {
   }
 }
 
-function handleSolve(
+function handleGridSolve(
   id: string,
   gridQ: number,
   gridR: number,
   seed: number,
-  tileTypes?: number[],
+  tileTypes: number[] | undefined,
+  wfcMode: "legacy-compat" | "modern-fast",
 ): void {
   if (!engine) {
     post({ type: "error", id, message: "engine not initialized" });
@@ -61,11 +59,45 @@ function handleSolve(
       grid_q: gridQ,
       grid_r: gridR,
       tile_types: tileTypes ?? null,
+      wfc_mode: wfcMode,
     };
     const result = engine.solve_grid_packed(options) as PackedSolveResult;
     post(
       { type: "result", id, data: result },
-      [result.cells.buffer],
+      [
+        result.cells.buffer,
+        result.collapse_order.buffer,
+        result.changed_fixed_cells.buffer,
+        result.unfixed_cells.buffer,
+        result.dropped_cells.buffer,
+      ],
+    );
+  } catch (error) {
+    post({ type: "error", id, message: errorMessage(error) });
+  }
+}
+
+function handleSinglePassSolve(
+  id: string,
+  seed: number,
+  tileTypes: number[] | undefined,
+  wfcMode: "legacy-compat" | "modern-fast",
+): void {
+  if (!engine) {
+    post({ type: "error", id, message: "engine not initialized" });
+    return;
+  }
+
+  try {
+    const options = {
+      seed: BigInt(seed),
+      tile_types: tileTypes ?? null,
+      wfc_mode: wfcMode,
+    };
+    const result = engine.solve_all_single_pass_packed(options) as PackedSinglePassResult;
+    post(
+      { type: "singlePassResult", id, data: result },
+      [result.cells.buffer, result.collapse_order.buffer],
     );
   } catch (error) {
     post({ type: "error", id, message: errorMessage(error) });
@@ -102,24 +134,26 @@ self.addEventListener("unhandledrejection", (event) => {
 });
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
-  const msg = event.data;
-
-  switch (msg.type) {
+  const message = event.data;
+  switch (message.type) {
     case "init":
-      if (msg.protocolVersion !== WFC_PROTOCOL_VERSION) {
+      if (message.protocolVersion !== WFC_PROTOCOL_VERSION) {
         postFatal(
           "init",
-          `Protocol version mismatch: expected ${WFC_PROTOCOL_VERSION}, got ${msg.protocolVersion}.`,
+          `Protocol version mismatch: expected ${WFC_PROTOCOL_VERSION}, got ${message.protocolVersion}.`,
         );
         break;
       }
       void initialize();
       break;
     case "solve":
-      handleSolve(msg.id, msg.gridQ, msg.gridR, msg.seed, msg.tileTypes);
+      handleGridSolve(message.id, message.gridQ, message.gridR, message.seed, message.tileTypes, message.wfcMode);
+      break;
+    case "solveAllSinglePass":
+      handleSinglePassSolve(message.id, message.seed, message.tileTypes, message.wfcMode);
       break;
     case "placements":
-      handlePlacements(msg.id, msg.gridQ, msg.gridR, msg.seed, msg.offsetX, msg.offsetZ);
+      handlePlacements(message.id, message.gridQ, message.gridR, message.seed, message.offsetX, message.offsetZ);
       break;
     case "reset":
       engine?.reset();

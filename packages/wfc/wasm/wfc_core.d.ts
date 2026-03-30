@@ -1,45 +1,19 @@
 /* tslint:disable */
 /* eslint-disable */
 
-/**
- * The WFC engine, holding global state across multiple grid solves.
- */
 export class WfcEngine {
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Generate placements for a solved grid.
-     */
+    debug_legacy_trace_grid_once(options: any): any;
+    debug_legacy_trace_single_pass_once(options: any): any;
     generate_placements(grid_q: number, grid_r: number, seed: bigint, offset_x: number, offset_z: number): any;
-    /**
-     * Generate packed placements for a solved grid.
-     */
     generate_placements_packed(grid_q: number, grid_r: number, seed: bigint, offset_x: number, offset_z: number): Float32Array;
-    /**
-     * Get the number of cells in the global map.
-     */
     global_cell_count(): number;
-    /**
-     * Create a new WFC engine.
-     */
     constructor();
-    /**
-     * Reset the engine, clearing all global state.
-     */
     reset(): void;
-    /**
-     * Solve all 19 grids in order (center first, then outward).
-     * Returns an array of JsSolveResult.
-     */
-    solve_all(seed: bigint): any;
-    /**
-     * Solve a single grid at the given position.
-     * Returns a JsSolveResult via serde_wasm_bindgen.
-     */
+    solve_all_single_pass(options: any): any;
+    solve_all_single_pass_packed(options: any): any;
     solve_grid(options: any): any;
-    /**
-     * Solve a single grid and return a packed cell buffer plus metadata.
-     */
     solve_grid_packed(options: any): any;
 }
 
@@ -48,12 +22,15 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wfcengine_free: (a: number, b: number) => void;
+    readonly wfcengine_debug_legacy_trace_grid_once: (a: number, b: number, c: number) => void;
+    readonly wfcengine_debug_legacy_trace_single_pass_once: (a: number, b: number, c: number) => void;
     readonly wfcengine_generate_placements: (a: number, b: number, c: number, d: number, e: bigint, f: number, g: number) => void;
     readonly wfcengine_generate_placements_packed: (a: number, b: number, c: number, d: number, e: bigint, f: number, g: number) => void;
     readonly wfcengine_global_cell_count: (a: number) => number;
     readonly wfcengine_new: () => number;
     readonly wfcengine_reset: (a: number) => void;
-    readonly wfcengine_solve_all: (a: number, b: number, c: bigint) => void;
+    readonly wfcengine_solve_all_single_pass: (a: number, b: number, c: number) => void;
+    readonly wfcengine_solve_all_single_pass_packed: (a: number, b: number, c: number) => void;
     readonly wfcengine_solve_grid: (a: number, b: number, c: number) => void;
     readonly wfcengine_solve_grid_packed: (a: number, b: number, c: number) => void;
     readonly __wbindgen_export: (a: number, b: number) => number;

@@ -8,12 +8,14 @@ export interface BuildProgress {
   readonly total: number;
   readonly gridIndex: number;
   readonly fallbackCount: number;
+  readonly failedCount: number;
 }
 
 export interface BuildSummary {
   readonly totalGrids: number;
   readonly solvedCount: number;
   readonly fallbackCount: number;
+  readonly failedCount: number;
 }
 
 /**

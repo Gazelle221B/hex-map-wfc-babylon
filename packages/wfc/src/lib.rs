@@ -1,4 +1,6 @@
 pub mod hex;
+pub mod grid_layout;
+pub mod mode;
 pub mod tile;
 pub mod rng;
 pub mod grid;

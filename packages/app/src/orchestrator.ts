@@ -68,7 +68,8 @@ export async function boot(
         }
       },
       onAllSolved: (summary) => {
-        statusElement.textContent = `Completed with ${summary.fallbackCount} fallback grids`;
+        statusElement.textContent =
+          `Completed with ${summary.fallbackCount} fallback grids and ${summary.failedCount} failed grids`;
       },
     });
 
@@ -80,14 +81,11 @@ export async function boot(
     }`;
 
     renderer.clear();
-    statusElement.textContent = "Solving center grid…";
-    const centerGrid = await wfc.solveGrid(0, 0);
-    renderer.addGrid(centerGrid);
-
-    statusElement.textContent = "Generating placements…";
-    const placements = await wfc.generatePlacements([centerGrid], config.seed);
-    renderer.addPlacements(placements);
-    statusElement.textContent = "Ready";
+    statusElement.textContent = `Solving ${config.buildMode}…`;
+    const summary = config.buildMode === "single-pass"
+      ? await wfc.buildAllSinglePass(config.seed, config.wfcMode)
+      : await wfc.buildAllProgressively(config.seed, config.wfcMode);
+    statusElement.textContent = `Ready (${summary.solvedCount} solved, ${summary.fallbackCount} fallback, ${summary.failedCount} failed)`;
 
     return {
       dispose() {

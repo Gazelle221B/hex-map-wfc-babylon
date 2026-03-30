@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use indexmap::IndexSet;
+
 use crate::hex::{CubeCoord, HexDir};
+use crate::mode::WfcMode;
 use crate::tile::{
     build_tile_list, generate_all_states, get_edge_level, get_edge_type,
     TileDef, TileState,
@@ -11,7 +14,7 @@ use crate::tile::{
 #[derive(Clone, Debug)]
 pub struct WfcCell {
     pub coord: CubeCoord,
-    pub possibilities: HashSet<u32>, // compact keys of TileState
+    pub possibilities: IndexSet<u32>, // compact keys of TileState in JS Set order
     pub collapsed: bool,
     pub tile: Option<TileState>,
 }
@@ -34,10 +37,23 @@ impl WfcCell {
     }
 
     pub fn collapse(&mut self, state: TileState) {
+        let key = state.compact_key();
         self.possibilities.clear();
-        self.possibilities.insert(state.compact_key());
+        self.possibilities.insert(key);
         self.collapsed = true;
         self.tile = Some(state);
+    }
+
+    pub fn remove_possibility(&mut self, state_key: u32) -> bool {
+        self.possibilities.shift_remove(&state_key)
+    }
+
+    pub fn add_possibility(&mut self, state_key: u32) -> bool {
+        self.possibilities.insert(state_key)
+    }
+
+    pub fn restore_possibilities(&mut self, possibilities: IndexSet<u32>) {
+        self.possibilities = possibilities;
     }
 }
 
@@ -193,6 +209,8 @@ pub struct WfcGrid {
     pub fixed_cells: HashMap<String, TileState>,
     pub rules: Arc<AdjacencyRules>,
     ordered_keys: Vec<String>,
+    input_order_keys: Vec<String>,
+    fixed_key_order: Vec<String>,
     neighbors: HashMap<String, Vec<NeighborRef>>,
 }
 
@@ -218,7 +236,12 @@ impl WfcGrid {
             .map(|(_, key, state)| (key.clone(), *state))
             .collect::<HashMap<_, _>>();
 
-        let mut ordered_keys = cells.keys().cloned().collect::<Vec<_>>();
+        let input_order_keys = coords.iter().map(CubeCoord::key).collect::<Vec<_>>();
+        let fixed_key_order = fixed_cell_entries
+            .iter()
+            .map(|(_, key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let mut ordered_keys = input_order_keys.clone();
         ordered_keys.sort();
 
         let mut neighbors = HashMap::new();
@@ -264,6 +287,8 @@ impl WfcGrid {
             fixed_cells,
             rules,
             ordered_keys,
+            input_order_keys,
+            fixed_key_order,
             neighbors,
         }
     }
@@ -276,6 +301,21 @@ impl WfcGrid {
 
     pub fn ordered_keys(&self) -> &[String] {
         &self.ordered_keys
+    }
+
+    pub fn input_order_keys(&self) -> &[String] {
+        &self.input_order_keys
+    }
+
+    pub fn fixed_key_order(&self) -> &[String] {
+        &self.fixed_key_order
+    }
+
+    pub fn keys_for_mode(&self, mode: WfcMode) -> &[String] {
+        match mode {
+            WfcMode::LegacyCompat => self.input_order_keys(),
+            WfcMode::ModernFast => self.ordered_keys(),
+        }
     }
 
     pub fn neighbors(&self, key: &str) -> Option<&[NeighborRef]> {

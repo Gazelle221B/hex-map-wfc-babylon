@@ -1,10 +1,13 @@
 export type {
   CellResult,
+  CoordResult,
+  GridConflict,
   GridResult,
+  GridSolveStats,
   PackedGridChunk,
   PackedGridStatus,
 } from "./cell.js";
-export { PACKED_GRID_STRIDE } from "./cell.js";
+export { PACKED_COORD_STRIDE, PACKED_GRID_STRIDE } from "./cell.js";
 export type {
   PlacementType,
   PlacementItem,
