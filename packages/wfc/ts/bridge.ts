@@ -102,7 +102,6 @@ export class WfcBridge {
       this.currentSeed = normalizeSeed(seed);
       this.postResetUnsafe();
       const cache = new Map<number, GridResult>();
-      const results: GridResult[] = [];
       for (const [gridIndex, pos] of ALL_GRID_POSITIONS.entries()) {
         const raw = await this.solveGridRaw(
           pos.q,
@@ -112,7 +111,6 @@ export class WfcBridge {
         );
         const normalized = normalizeGridResult(raw, gridIndex);
         const impacted = applyGridMetadata(cache, normalized);
-        results.push(cache.get(gridIndex)!);
         for (const grid of impacted) {
           this.emitGridSolved(toPackedGridChunk(grid));
         }
